@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>示意图 B · 折叠分组面板</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; background:#f0f2f5; color:#333; }
+  .notice { background:#fffbe6; border-bottom:1px solid #ffe58f; color:#ad6800; font-size:12px; padding:6px 20px; text-align:center; }
+  .wrap { max-width:1200px; margin:0 auto; padding:18px 20px; }
+  .toolbar { display:flex; gap:10px; margin-bottom:16px; flex-wrap:wrap; align-items:center; }
+  .toolbar input { flex:1; min-width:220px; max-width:420px; padding:9px 14px; border:1px solid #d9d9d9; border-radius:8px; font-size:14px; outline:none; }
+  .toolbar input:focus { border-color:#1677ff; box-shadow:0 0 0 2px rgba(22,119,255,.1); }
+  .expand-btn { padding:8px 14px; background:#fff; border:1px solid #d9d9d9; border-radius:8px; font-size:13px; cursor:pointer; }
+  .expand-btn:hover { border-color:#1677ff; color:#1677ff; }
+  .section { background:#fff; border:1px solid #e8e8e8; border-radius:10px; margin-bottom:12px; overflow:hidden; }
+  .sec-head { display:flex; align-items:center; gap:10px; padding:13px 18px; cursor:pointer; user-select:none; }
+  .sec-head:hover { background:#fafafa; }
+  .arrow { transition:transform .2s; color:#999; font-size:12px; }
+  .section.open .arrow { transform:rotate(90deg); }
+  .cat-dot { width:9px; height:9px; border-radius:50%; }
+  .sec-title { font-size:15px; font-weight:600; }
+  .sec-count { font-size:12px; color:#8c8c8c; }
+  .sec-body { display:none; padding:4px 18px 16px; }
+  .section.open .sec-body { display:block; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; }
+  .card { background:#fafafa; border:1px solid #eee; border-radius:10px; padding:13px 15px; transition:box-shadow .2s; cursor:pointer; }
+  .card:hover { box-shadow:0 4px 16px rgba(0,0,0,.08); background:#fff; }
+  .card-header { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
+  .card-name { font-size:15px; font-weight:600; flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .env-tag { font-size:11px; padding:1px 7px; border-radius:4px; flex-shrink:0; }
+  .env-prod { background:#f6ffed; color:#389e0d; border:1px solid #b7eb8f; }
+  .env-test { background:#fff7e6; color:#d46b08; border:1px solid #ffd591; }
+  .meta-row { display:flex; align-items:center; margin-bottom:8px; }
+  .cat-chip { font-size:11px; padding:1px 7px; border-radius:4px; color:#fff; }
+  .probe-tag { font-size:11px; color:#389e0d; background:#f6ffed; border:1px solid #b7eb8f; border-radius:4px; padding:1px 7px; margin-left:auto; }
+  .url-row { display:flex; justify-content:space-between; align-items:center; font-size:12.5px; color:#555; background:#fff; border:1px solid #f0f0f0; border-radius:6px; padding:5px 8px; margin-bottom:4px; }
+  .url-row span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .copy { color:#999; flex-shrink:0; }
+  .sub-row { font-size:12px; color:#8c8c8c; margin-top:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+</style>
+</head>
+<body>
+<div class="notice">📌 示意图 B：折叠分组面板（默认只展开第一组，点标题开合；右上角可全部展开）</div>
+<div class="wrap">
+  <div class="toolbar">
+    <input id="kw" placeholder="🔍 搜索系统名称 / 地址 / 负责人…">
+    <button class="expand-btn" id="toggleAll" onclick="toggleAll()">全部展开</button>
+  </div>
+  <div id="sections"></div>
+</div>
+<script>
+const CATS = [
+  ["代码仓库","#1677ff"],["CI/CD","#722ed1"],["监控告警","#fa8c16"],
+  ["数据库","#13c2c2"],["云资源","#52c41a"],["文档协作","#eb2f96"],
+];
+const SITES = [
+  {name:"GitLab",cat:"代码仓库",env:"生产环境",domain:"gitlab.company.com",inner:"http://10.0.1.10:8080",owner:"运维组",probe:1},
+  {name:"Nexus 制品私服",cat:"代码仓库",env:"生产环境",domain:"nexus.company.com",inner:"http://10.0.1.11:8081",owner:"运维组",probe:1},
+  {name:"GitHub 企业镜像",cat:"代码仓库",env:"测试环境",public:"github.example.com",owner:"架构组"},
+  {name:"Jenkins",cat:"CI/CD",env:"生产环境",domain:"jenkins.company.com",inner:"http://10.0.2.20:8080",owner:"运维组",probe:1},
+  {name:"ArgoCD",cat:"CI/CD",env:"生产环境",domain:"argocd.company.com",owner:"运维组",probe:1},
+  {name:"SonarQube",cat:"CI/CD",env:"生产环境",domain:"sonar.company.com",owner:"质量组"},
+  {name:"GitLab Runner",cat:"CI/CD",env:"测试环境",inner:"http://10.0.2.23",owner:"运维组"},
+  {name:"Grafana",cat:"监控告警",env:"生产环境",domain:"grafana.company.com",owner:"运维组",probe:1},
+  {name:"Prometheus",cat:"监控告警",env:"生产环境",inner:"http://10.0.3.30:9090",owner:"运维组",probe:1},
+  {name:"Zabbix",cat:"监控告警",env:"生产环境",domain:"zabbix.company.com",owner:"网络组",probe:1},
+  {name:"拨测平台",cat:"监控告警",env:"测试环境",domain:"probe.company.com",owner:"运维组"},
+  {name:"RDS-订单库",cat:"数据库",env:"生产环境",remark:"DMS 入口 · rds-order.mysql.rds.aliyuncs.com",owner:"DBA"},
+  {name:"Redis 管理",cat:"数据库",env:"生产环境",inner:"http://10.0.4.41",owner:"DBA"},
+  {name:"OSS-日志归档",cat:"云资源",env:"生产环境",remark:"bucket: company-log-archive",owner:"运维组"},
+  {name:"OSS-前端静态资源",cat:"云资源",env:"生产环境",remark:"bucket: company-web-static",owner:"前端组"},
+  {name:"SLB 负载均衡",cat:"云资源",env:"生产环境",remark:"阿里云控制台入口",owner:"运维组"},
+  {name:"Confluence",cat:"文档协作",env:"生产环境",domain:"wiki.company.com",owner:"行政IT",probe:1},
+  {name:"Jira",cat:"文档协作",env:"生产环境",domain:"jira.company.com",owner:"项目管理部"},
+];
+const $ = id => document.getElementById(id);
+const esc = s => (s||"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let allOpen = false;
+
+function card(s) {
+  const color = (CATS.find(c=>c[0]===s.cat)||[,"#999"])[1];
+  const urls = [["域名",s.domain],["公网",s.public],["内网",s.inner]].filter(u=>u[1])
+    .map(([k,v])=>`<div class="url-row"><span>${esc(v)}</span><span class="copy">📋</span></div>`).join("");
+  return `<div class="card">
+    <div class="card-header"><span class="card-name">${esc(s.name)}</span>
+      <span class="env-tag ${s.env==="生产环境"?"env-prod":"env-test"}">${s.env}</span></div>
+    <div class="meta-row"><span class="cat-chip" style="background:${color}">${esc(s.cat)}</span>
+      ${s.probe?'<span class="probe-tag">📡 已监控</span>':""}</div>
+    ${urls}${s.remark?`<div class="sub-row">💡 ${esc(s.remark)}</div>`:""}
+    <div class="sub-row">👤 ${esc(s.owner)}</div></div>`;
+}
+function render() {
+  const kw = $("kw").value.trim().toLowerCase();
+  const hit = s => !kw || [s.name,s.domain,s.public,s.inner,s.owner,s.remark].join(" ").toLowerCase().includes(kw);
+  let idx = 0, html = "";
+  CATS.forEach(([cat,color]) => {
+    const list = SITES.filter(s => s.cat===cat && hit(s));
+    if (!list.length) return;
+    const open = allOpen || kw !== "" || idx === 0;
+    html += `<div class="section ${open?"open":""}" id="sec-${idx}">
+      <div class="sec-head" onclick="this.parentNode.classList.toggle('open')">
+        <span class="arrow">▶</span><span class="cat-dot" style="background:${color}"></span>
+        <span class="sec-title">${esc(cat)}</span><span class="sec-count">(${list.length})</span></div>
+      <div class="sec-body"><div class="grid">${list.map(card).join("")}</div></div></div>`;
+    idx++;
+  });
+  $("sections").innerHTML = html || '<p style="color:#999;text-align:center;padding:60px;">没有匹配的系统</p>';
+}
+function toggleAll() {
+  allOpen = !allOpen;
+  $("toggleAll").textContent = allOpen ? "全部收起" : "全部展开";
+  document.querySelectorAll(".section").forEach(el =>
+    el.classList.toggle("open", allOpen));
+}
+$("kw").addEventListener("input", () => { allOpen = true; $("toggleAll").textContent = "全部收起"; render(); });
+render();
+</script>
+</body>
+</html>

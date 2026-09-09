@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+data/
+*.tmp
+*.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志 / 临时
+*.log
+nohup.out
+.coverage
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# 本地调试产物
+static/_idx_check.js

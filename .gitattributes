@@ -1,0 +1,11 @@
+# 统一 LF：CRLF 会让服务器上的 .sh / Dockerfile / .env.example 失效
+#   deploy.sh 的 shebang 变成 #!/bin/bash\r → bash 找不到解释器
+#   .env.example 的 CRLF 会让 ADMIN_PASSWORD 的值带上尾随 \r → 登录密码对不上
+# gitattributes 里的 eol= 优先级高于 core.autocrlf，跨机器行为一致
+* text=auto eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.env.example text eol=lf
+*.yml text eol=lf
+Dockerfile text eol=lf
+requirements.txt text eol=lf

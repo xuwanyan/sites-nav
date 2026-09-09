@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>运维登录 · 公司常用网站导航</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f0f2f5;
+    color: #333;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .login-card {
+    background: #fff;
+    border-radius: 12px;
+    border: 1px solid #e8e8e8;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    width: 90%;
+    max-width: 380px;
+    padding: 32px 28px;
+  }
+  .login-card h1 { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+  .login-card .sub { font-size: 13px; color: #8c8c8c; margin-bottom: 22px; }
+  .form-group { margin-bottom: 16px; }
+  .form-group label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+  .form-group input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #d9d9d9;
+    border-radius: 6px;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .form-group input:focus { border-color: #1677ff; box-shadow: 0 0 0 2px rgba(22,119,255,0.1); }
+  .btn {
+    width: 100%;
+    padding: 10px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-weight: 500;
+  }
+  .btn-primary { background: #1677ff; color: #fff; }
+  .btn-primary:hover { background: #4096ff; }
+  .btn-default { background: #fff; color: #333; border: 1px solid #d9d9d9; margin-top: 10px; }
+  .btn-default:hover { border-color: #1677ff; color: #1677ff; }
+  .btn-danger { background: #ff4d4f; color: #fff; margin-top: 10px; }
+  .btn-danger:hover { background: #ff7875; }
+  .ok-box {
+    background: #f6ffed;
+    border: 1px solid #b7eb8f;
+    color: #389e0d;
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 13px;
+    margin-bottom: 16px;
+  }
+  .toast {
+    position: fixed;
+    top: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 12px 24px;
+    border-radius: 8px;
+    color: #fff;
+    font-size: 14px;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+  .toast.success { background: #52c41a; }
+  .toast.error { background: #ff4d4f; }
+</style>
+</head>
+<body>
+
+<div class="login-card">
+  <h1>🏢 运维登录</h1>
+  <div class="sub">公司常用网站导航 · 管理入口</div>
+
+  <!-- 已登录态 -->
+  <div id="loggedInBox" style="display:none;">
+    <div class="ok-box">✅ 当前已处于运维模式</div>
+    <button class="btn btn-primary" onclick="location.href='/'">返回首页管理</button>
+    <button class="btn btn-danger" onclick="doLogout()">退出登录</button>
+  </div>
+
+  <!-- 未登录态 -->
+  <div id="loginForm">
+    <div class="form-group">
+      <label>运维口令</label>
+      <input type="password" id="password" placeholder="请输入运维口令" onkeydown="if(event.key==='Enter')doLogin()">
+    </div>
+    <button class="btn btn-primary" onclick="doLogin()">登录</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const token = sessionStorage.getItem("nav_token") || "";
+
+function showToast(msg, type = "success") {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = `toast ${type} show`;
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove("show"), 2500);
+}
+
+if (token) {
+  $("loggedInBox").style.display = "";
+  $("loginForm").style.display = "none";
+} else {
+  setTimeout(() => $("password").focus(), 100);
+}
+
+async function doLogin() {
+  const password = $("password").value;
+  if (!password) { showToast("请输入运维口令", "error"); return; }
+  try {
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || "登录失败");
+    sessionStorage.setItem("nav_token", data.token);
+    showToast("登录成功，正在进入首页…", "success");
+    setTimeout(() => { location.href = "/"; }, 600);
+  } catch (e) {
+    showToast("登录失败: " + e.message, "error");
+  }
+}
+
+function doLogout() {
+  sessionStorage.removeItem("nav_token");
+  showToast("已退出运维模式", "success");
+  setTimeout(() => { location.href = "/"; }, 600);
+}
+</script>
+</body>
+</html>

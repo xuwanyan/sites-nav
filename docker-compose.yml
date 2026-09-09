@@ -1,0 +1,27 @@
+services:
+  sites-nav:
+    build: .
+    image: sites-nav:latest
+    # 不设 container_name：允许同名镜像多实例；需要固定名可手动加
+    ports:
+      - "8000:8000"
+    # 从 .env 读取所有变量（含未来新增的），避免硬编码白名单漏掉新变量
+    env_file: .env
+    volumes:
+      - ./data:/app/data          # 数据持久化，备份即复制 ./data/sites.json
+    restart: unless-stopped
+    # ── 容器加固 ──
+    read_only: true               # 文件系统只读，只有 ./data 可写
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health', timeout=5); sys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

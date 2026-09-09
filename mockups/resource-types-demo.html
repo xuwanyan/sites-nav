@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>示意 · 资源类型：网站 / 缓存 / 消息队列 / 数据库 / 存储</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; background:#f0f2f5; color:#333; }
+  .notice { background:#fffbe6; border-bottom:1px solid #ffe58f; color:#ad6800; font-size:12px; padding:7px 20px; text-align:center; }
+  .layout { display:flex; min-height:calc(100vh - 28px); }
+  aside { width:220px; flex-shrink:0; background:#fff; border-right:1px solid #e8e8e8; padding:14px 10px; }
+  aside h3 { font-size:12px; color:#8c8c8c; font-weight:500; letter-spacing:1px; padding:0 10px 8px; }
+  .cat-item { display:flex; align-items:center; gap:8px; padding:8px 12px; border-radius:8px; cursor:pointer; font-size:13.5px; margin-bottom:2px; }
+  .cat-item:hover { background:#f5f5f5; }
+  .cat-item.active { background:#e6f4ff; color:#1677ff; font-weight:600; }
+  .cat-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+  .cat-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .cat-count { font-size:12px; color:#8c8c8c; background:#f0f0f0; border-radius:10px; padding:0 7px; line-height:18px; }
+  .cat-item.active .cat-count { background:#bae0ff; color:#1677ff; }
+  main { flex:1; padding:18px 24px; min-width:0; }
+  .topbar { display:flex; gap:10px; margin-bottom:16px; flex-wrap:wrap; align-items:center; }
+  .chip { padding:6px 14px; background:#fff; border:1px solid #d9d9d9; border-radius:18px; font-size:13px; cursor:pointer; }
+  .chip:hover { border-color:#1677ff; color:#1677ff; }
+  .chip.active { background:#1677ff; border-color:#1677ff; color:#fff; font-weight:600; }
+  .toggle { font-size:12px; color:#1677ff; cursor:pointer; border:1px solid #d6e4ff; background:#f0f5ff; border-radius:6px; padding:5px 10px; }
+  .toggle:hover { background:#e6f4ff; }
+  .add-btn { margin-left:auto; background:#1677ff; color:#fff; border:none; border-radius:8px; padding:7px 14px; font-size:13px; cursor:pointer; }
+  .add-btn:hover { background:#4096ff; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; }
+
+  .card { background:#fff; border-radius:10px; border:1px solid #e8e8e8; border-top:3px solid #1677ff; padding:14px 16px; }
+  .card-head { display:flex; align-items:center; gap:6px; margin-bottom:6px; flex-wrap:wrap; }
+  .card-name { font-size:15px; font-weight:600; flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tag { font-size:11px; padding:1px 7px; border-radius:4px; flex-shrink:0; }
+  .t-prod { background:#f6ffed; color:#389e0d; border:1px solid #b7eb8f; }
+  .t-test { background:#fff7e6; color:#d46b08; border:1px solid #ffd591; }
+  .kind-tag { font-size:11px; padding:1px 7px; border-radius:4px; color:#fff; font-weight:500; flex-shrink:0; }
+  .meta-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; font-size:12px; color:#8c8c8c; flex-wrap:wrap; }
+  .cat-chip { font-size:11px; padding:1px 7px; border-radius:4px; color:#fff; }
+  .actions { margin-left:auto; display:flex; gap:4px; }
+  .act-btn { padding:2px 8px; font-size:11px; border-radius:4px; border:1px solid #d9d9d9; background:#fff; cursor:pointer; }
+  .act-btn:hover { border-color:#1677ff; color:#1677ff; }
+  .act-btn.danger:hover { border-color:#ff4d4f; color:#ff4d4f; }
+  .act-btn:disabled { opacity:.4; cursor:default; }
+
+  /* 网站卡片：URL 行 */
+  .url-row { display:flex; justify-content:space-between; align-items:center; font-size:12.5px; color:#555; padding:5px 9px; border-bottom:1px dashed #f0f0f0; }
+  .url-row:last-child { border-bottom:none; }
+  .url-row .lbl { background:#e6f4ff; color:#0958d9; font-size:10px; padding:1px 6px; border-radius:3px; margin-right:8px; flex-shrink:0; }
+  .url-row .val { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#1677ff; }
+  .copy { color:#999; cursor:pointer; flex-shrink:0; margin-left:6px; }
+
+  /* 连接串卡片：单块展示 */
+  .conn-box { background:#f6f8fa; border:1px solid #e1e4e8; border-radius:6px; padding:8px 10px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; color:#24292e; word-break:break-all; line-height:1.5; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .conn-box .txt { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .conn-box .icon { flex-shrink:0; color:#1677ff; cursor:pointer; }
+
+  /* 分组卡环境列 */
+  .env-col { border:1px solid #f0f0f0; border-radius:8px; margin-bottom:8px; overflow:hidden; }
+  .env-col-head { display:flex; align-items:center; justify-content:space-between; font-size:12px; padding:5px 10px; background:#fafafa; border-bottom:1px solid #f0f0f0; gap:6px; flex-wrap:wrap; }
+  .env-col-label { font-weight:600; }
+  .env-col-label.prod { color:#cf1322; }
+  .env-col-label.test { color:#389e0d; }
+
+  /* 新增弹窗 */
+  .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.45); display:none; align-items:center; justify-content:center; z-index:100; }
+  .modal-overlay.show { display:flex; }
+  .modal { background:#fff; border-radius:12px; width:560px; max-width:95vw; max-height:90vh; overflow:auto; padding:0; }
+  .modal-head { padding:14px 20px; border-bottom:1px solid #f0f0f0; display:flex; justify-content:space-between; align-items:center; }
+  .modal-head h3 { font-size:15px; font-weight:600; }
+  .modal-close { cursor:pointer; font-size:20px; color:#999; line-height:1; }
+  .modal-body { padding:18px 20px; }
+  .field { margin-bottom:12px; }
+  .field label { display:block; font-size:12px; color:#595959; margin-bottom:5px; }
+  .field input, .field select, .field textarea { width:100%; padding:7px 10px; border:1px solid #d9d9d9; border-radius:6px; font-size:13px; box-sizing:border-box; font-family:inherit; }
+  .field input:focus, .field select:focus, .field textarea:focus { outline:none; border-color:#1677ff; }
+  .field .hint { font-size:11px; color:#8c8c8c; margin-top:4px; }
+  .field-row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .modal-foot { padding:12px 20px; border-top:1px solid #f0f0f0; display:flex; justify-content:flex-end; gap:8px; }
+  .modal-foot button { padding:7px 16px; border-radius:6px; font-size:13px; cursor:pointer; border:1px solid transparent; }
+  .btn-default { background:#fff; color:#333; border:1px solid #d9d9d9; }
+  .btn-primary { background:#1677ff; color:#fff; }
+  .btn-primary:hover { background:#4096ff; }
+
+  .demo-tip { margin-top:20px; font-size:12px; color:#999; text-align:center; line-height:1.8; }
+  .demo-tip b { color:#1677ff; }
+</style>
+</head>
+<body>
+<div class="notice">📌 示意图 · 资源类型扩展：kind 是自由文本（常见类型有提示，也可自定义），URL 三字段 + 连接串四选一或多选填，卡片按填了什么显示什么</div>
+<div class="layout">
+  <aside>
+    <h3>📂 分类目录</h3>
+    <div id="catList"></div>
+  </aside>
+  <main>
+    <div class="topbar">
+      <span id="envBar"></span>
+      <span class="toggle" id="grpToggle" onclick="toggleGroup()">🔗 分组卡</span>
+      <button class="add-btn" onclick="openAdd()">+ 新增资源</button>
+    </div>
+    <div class="grid" id="grid"></div>
+    <div class="demo-tip">
+      <b>说明：</b>
+      kind 是自由文本——预设有常用类型，也可选「自定义…」自由填写（Nginx / Harbor / Vault / LDAP / K8s…）。<br>
+      URL 三字段 + 连接串都是可选：有 URL 就显示 URL 行，有连接串就显示连接块，都填就两组都显示（如 Harbor/Vault 既有域名又有 API 端点）。<br>
+      只填 kind/name/env 不填任何地址 → 纯元数据卡（如 K8s 集群）。同名双环境自动聚合。点右上「+ 新增资源」可体验。
+    </div>
+  </main>
+</div>
+
+<!-- 新增资源弹窗 -->
+<div class="modal-overlay" id="addModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>新增资源</h3>
+      <span class="modal-close" onclick="closeAdd()">×</span>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>资源类型 <span style="color:#ff4d4f">*</span></label>
+        <select id="f_kind" onchange="onKindChange()" list="kindSuggestions">
+          <option value="网站">🌐 网站 / 服务</option>
+          <option value="缓存">⚡ 缓存（Redis 等）</option>
+          <option value="消息队列">📨 消息队列（Kafka / RabbitMQ）</option>
+          <option value="数据库">🗄️ 数据库（MySQL / PG / Mongo）</option>
+          <option value="存储">☁️ 存储（OSS / S3 / NAS）</option>
+          <option value="">✏️ 自定义…（可自由填写）</option>
+        </select>
+        <input type="text" id="f_kind_custom" list="kindSuggestions" placeholder="自定义类型，如 Nginx / Harbor / Vault / K8s / LDAP…" style="margin-top:6px; display:none;">
+        <datalist id="kindSuggestions">
+          <option value="网站">
+          <option value="Nginx">
+          <option value="Harbor">
+          <option value="Vault">
+          <option value="Kubernetes">
+          <option value="LDAP">
+          <option value="DNS">
+          <option value="Prometheus">
+          <option value="内部工具">
+        </datalist>
+      </div>
+      <div class="field">
+        <label>名称 <span style="color:#ff4d4f">*</span></label>
+        <input type="text" id="f_name" placeholder="如 Redis-主库">
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>环境 <span style="color:#ff4d4f">*</span></label>
+          <select id="f_env">
+            <option value="生产环境">生产环境</option>
+            <option value="测试环境">测试环境</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>分类</label>
+          <input type="text" id="f_category" placeholder="如 中间件">
+        </div>
+      </div>
+
+      <!-- 网站专用字段 -->
+      <div id="siteFields">
+        <div class="field-row">
+          <div class="field">
+            <label>域名</label>
+            <input type="text" id="f_domain" placeholder="如 redis.company.com" oninput="updateMonitorBtn()">
+          </div>
+          <div class="field">
+            <label>公网地址</label>
+            <input type="text" id="f_public" placeholder="https://..." oninput="updateMonitorBtn()">
+          </div>
+        </div>
+        <div class="field">
+          <label>内网地址</label>
+          <input type="text" id="f_private" placeholder="http://10.0.1.5:8080" oninput="updateMonitorBtn()">
+        </div>
+      </div>
+
+      <!-- 非网站专用字段 -->
+      <div id="connFields" style="display:none;">
+        <div class="field">
+          <label>连接串 <span style="color:#ff4d4f">*</span></label>
+          <input type="text" id="f_connection" placeholder="如 redis://10.0.1.5:6379/0">
+          <div class="hint" id="connHint"></div>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label>负责人</label>
+          <input type="text" id="f_owner" placeholder="如 运维组">
+        </div>
+        <div class="field">
+          <label>监控</label>
+          <select id="f_monitor">
+            <option value="true">📡 加入拨测</option>
+            <option value="false">不加入</option>
+          </select>
+          <div class="hint" style="margin-top:4px; font-size:11px; color:#8c8c8c;">拨测仅对填了 URL 地址的资源生效（HTTP 拨测）</div>
+        </div>
+      </div>
+      <div class="field">
+        <label>备注</label>
+        <textarea id="f_remark" rows="2" placeholder="可选"></textarea>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn-default" onclick="closeAdd()">取消</button>
+      <button class="btn-primary" onclick="submitAdd()">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const KINDS = {
+  "网站":     { color:"#1677ff", icon:"🌐", label:"网站",     placeholder:"http://gitlab.company.com",            hint:"URL 形式，可带端口或路径" },
+  "缓存":     { color:"#fa8c16", icon:"⚡", label:"缓存",     placeholder:"redis://10.0.1.5:6379/0",             hint:"推荐 redis://host:port/db 或 host:port 形式" },
+  "消息队列": { color:"#722ed1", icon:"📨", label:"消息队列", placeholder:"10.0.3.4:9092",                        hint:"Kafka 填 bootstrap_servers；RabbitMQ 用 amqp://user:pwd@host:port" },
+  "数据库":   { color:"#13c2c2", icon:"🗄️", label:"数据库",   placeholder:"mysql://user:pwd@10.0.4.5:3306/orders", hint:"推荐 mysql:// / postgres:// 形式，密码敏感建议只在内网可见环境暴露" },
+  "存储":     { color:"#52c41a", icon:"☁️", label:"存储",     placeholder:"oss-cn-hangzhou.aliyuncs.com/my-bucket", hint:"如 OSS/S3 endpoint + bucket 名" },
+  "其他":     { color:"#8c8c8c", icon:"📦", label:"其他",     placeholder:"自由填写",                              hint:"任何连接信息" },
+};
+const CATS = [["代码仓库","#1677ff"],["CI/CD","#722ed1"],["监控告警","#fa8c16"],["中间件","#722ed1"],["存储","#52c41a"],["安全","#f5222d"],["容器","#2f54eb"]];
+
+const SITES = [
+  // 网站（保持原样）
+  {id:1,name:"GitLab",kind:"网站",cat:"代码仓库",env:"生产环境",domain:"gitlab.company.com",inner:"http://10.0.1.10:8080",owner:"运维组",probe:true},
+  {id:2,name:"GitLab",kind:"网站",cat:"代码仓库",env:"测试环境",domain:"gitlab-test.company.com",inner:"http://10.0.1.11:8080",owner:"运维组",probe:false},
+  {id:3,name:"Grafana",kind:"网站",cat:"监控告警",env:"生产环境",domain:"grafana.company.com",owner:"运维组",probe:true},
+
+  // 缓存
+  {id:4,name:"Redis-主库",kind:"缓存",cat:"中间件",env:"生产环境",connection:"redis://10.0.1.5:6379/0",owner:"运维组"},
+  {id:5,name:"Redis-主库",kind:"缓存",cat:"中间件",env:"测试环境",connection:"redis://10.0.2.5:6379/0",owner:"运维组"},
+  {id:6,name:"Redis-会话",kind:"缓存",cat:"中间件",env:"生产环境",connection:"redis://10.0.1.5:6380/1",owner:"运维组"},
+
+  // 消息队列
+  {id:7,name:"Kafka",kind:"消息队列",cat:"中间件",env:"生产环境",connection:"10.0.3.4:9092,10.0.3.5:9092,10.0.3.6:9092",owner:"运维组"},
+  {id:8,name:"Kafka",kind:"消息队列",cat:"中间件",env:"测试环境",connection:"10.0.3.4:9093",owner:"运维组"},
+  {id:9,name:"RabbitMQ",kind:"消息队列",cat:"中间件",env:"生产环境",connection:"amqp://guest:guest@10.0.2.3:5672",owner:"运维组"},
+
+  // 数据库
+  {id:10,name:"MySQL-订单库",kind:"数据库",cat:"中间件",env:"生产环境",connection:"mysql://order_rw:***@10.0.4.5:3306/orders",owner:"DBA"},
+  {id:11,name:"MySQL-订单库",kind:"数据库",cat:"中间件",env:"测试环境",connection:"mysql://order_rw:***@10.0.4.6:3306/orders_test",owner:"DBA"},
+  {id:12,name:"MongoDB-日志库",kind:"数据库",cat:"中间件",env:"生产环境",connection:"mongodb://10.0.4.7:27017/logs",owner:"DBA"},
+
+  // 存储
+  {id:13,name:"OSS-日志归档",kind:"存储",cat:"存储",env:"生产环境",connection:"oss-cn-hangzhou.aliyuncs.com/company-log-archive",owner:"运维组"},
+  {id:14,name:"OSS-前端静态",kind:"存储",cat:"存储",env:"生产环境",connection:"oss-cn-hangzhou.aliyuncs.com/company-web-static",owner:"前端组"},
+
+  // 自定义类型（任意文本，不受预设限制）
+  {id:15,name:"Nginx-反向代理",kind:"Nginx",cat:"中间件",env:"生产环境",connection:"nginx://10.0.5.1",owner:"运维组"},
+  {id:16,name:"Harbor-镜像仓库",kind:"Harbor",cat:"存储",env:"生产环境",domain:"harbor.company.com",connection:"https://harbor.company.com",owner:"运维组"},
+  {id:17,name:"Vault-密钥管理",kind:"Vault",cat:"安全",env:"生产环境",domain:"vault.company.com",connection:"https://vault.company.com:8200",owner:"运维组",remark:"HTTP 拨测走域名，连接串走 8200 端口"},
+  {id:18,name:"LDAP-认证",kind:"LDAP",cat:"安全",env:"生产环境",connection:"ldap://ldap.company.com:389/dc=company,dc=com",owner:"运维组"},
+  {id:19,name:"K8s-生产集群",kind:"Kubernetes",cat:"容器",env:"生产环境",connection:"kubeconfig: /etc/kubernetes/admin.conf",owner:"运维组",remark:"仅元数据，无 URL/连接串"},
+  {id:20,name:"Prometheus",kind:"Prometheus",cat:"监控告警",env:"生产环境",domain:"prom.company.com",owner:"运维组",probe:true},
+];
+
+let activeCat = "全部", activeEnv = "全部", groupMode = true;
+const $ = id => document.getElementById(id);
+const esc = s => (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':'&quot;'}[c]));
+const colorOf = c => (CATS.find(x=>x[0]===c)||[,"#999"])[1];
+
+function catRow(key, color, label, n){
+  return `<div class="cat-item ${activeCat===key?"active":""}" onclick="filterCat('${esc(key)}')">
+    <span class="cat-dot" style="background:${color}"></span>
+    <span class="cat-name">${label||esc(key)}</span><span class="cat-count">${n}</span></div>`;
+}
+function renderCats(){
+  const pool = activeEnv==="全部"?SITES:SITES.filter(s=>s.env===activeEnv);
+  const counts = {}; pool.forEach(s=>counts[s.cat]=(counts[s.cat]||0)+1);
+  let h = catRow("全部","#8c8c8c","🗂 全部",pool.length);
+  CATS.forEach(([c,col])=>h+=catRow(c,col,null,counts[c]||0));
+  $("catList").innerHTML=h;
+}
+function renderEnvBar(){
+  $("envBar").innerHTML=["全部","生产环境","测试环境"].map(e=>{
+    const n=e==="全部"?SITES.length:SITES.filter(s=>s.env===e).length;
+    const ico=e==="全部"?"🌐":e==="生产环境"?"🔴":"🟢";
+    return `<span class="chip ${activeEnv===e?"active":""}" onclick="filterEnv('${e}')">${ico} ${e}<small style="font-weight:400;margin-left:3px;opacity:.7">(${n})</small></span>`;
+  }).join("");
+}
+
+function urlRows(s){
+  const rows=[["域名",s.domain],["公网",s.public],["内网",s.inner]].filter(r=>r[1]);
+  if(!rows.length) return `<div class="url-row"><span class="val">— 无地址 —</span></div>`;
+  return rows.map(r=>`<div class="url-row"><span class="lbl">${r[0]}</span><span class="val">${esc(r[1])}</span><span class="copy">📋</span></div>`).join("");
+}
+function connRow(s){
+  const c = s.connection || "— 未填写 —";
+  return `<div class="conn-box"><span class="txt">${esc(c)}</span><span class="icon">📋</span></div>`;
+}
+function cardBody(s){
+  // 三种字段都可选：有 URL 就显示 URL 行，有连接串就显示连接块，都填则两组都显示
+  const hasUrl = s.domain || s.public || s.inner;
+  const hasConn = s.connection;
+  if(hasUrl && hasConn) return urlRows(s) + `<div style="margin-top:8px;">${connRow(s)}</div>`;
+  if(hasUrl) return urlRows(s);
+  if(hasConn) return connRow(s);
+  return `<div style="font-size:12px; color:#bfbfbf; padding:6px 10px;">— 未填写 URL 或连接串 —</div>`;
+}
+function card(s, color){
+  const kind = KINDS[s.kind] || { color: "#8c8c8c", icon: "📦", label: s.kind };
+  const isProd = s.env==="生产环境";
+  return `<div class="card" style="border-top-color:${color}">
+    <div class="card-head">
+      <span class="card-name">${esc(s.name)}</span>
+      <span class="kind-tag" style="background:${kind.color}">${kind.icon} ${esc(s.kind)}</span>
+      <span class="tag ${isProd?"t-prod":"t-test"}">${s.env}</span>
+    </div>
+    <div class="meta-row">
+      <span class="cat-chip" style="background:${color}">${esc(s.cat)}</span>
+      ${s.probe ? '<span style="color:#389e0d;">📡 已监控</span>' : ""}
+      ${s.owner ? `<span>👤 ${esc(s.owner)}</span>` : ""}
+    </div>
+    ${cardBody(s)}
+    ${s.remark ? `<div style="margin-top:8px;font-size:12px;color:#8c8c8c;">💡 ${esc(s.remark)}</div>` : ""}
+  </div>`;
+}
+
+function groupedCard(name, entries){
+  // entries: [{env, sites:[...]}]  按生产、测试
+  const primary = entries[0].sites[0];
+  const kind = KINDS[primary.kind] || { color: "#8c8c8c", icon: "📦", label: primary.kind };
+  const color = kind.color; // 用 kind 颜色区分，不用 category 颜色
+  // 环境筛选：若只命中一个环境，只显示那一列
+  const shown = entries.filter(e => activeEnv==="全部" || e.env===activeEnv);
+  let cols = shown.map(e => {
+    const isProd=e.env==="生产环境";
+    return `<div class="env-col">
+      <div class="env-col-head">
+        <span class="env-col-label ${isProd?"prod":"test"}">${isProd?"🔴 生产":"🟢 测试"}</span>
+        <span style="font-size:11px;color:#888;">${e.sites.map(s => s.probe?"📡已监控":"").filter(Boolean).join(" ") || ""}</span>
+      </div>
+      ${e.sites.map(s => cardBody(s)).join("")}
+    </div>`;
+  }).join("");
+  const prod = entries.find(e=>e.env==="生产环境");
+  const test = entries.find(e=>e.env==="测试环境");
+  const tags = [];
+  if(prod && test) tags.push('<span class="tag t-prod">生产</span><span class="tag t-test">测试</span>');
+  else if(prod) tags.push('<span class="tag t-prod">生产</span>');
+  else if(test) tags.push('<span class="tag t-test">测试</span>');
+
+  return `<div class="card" style="border-top-color:${color}">
+    <div class="card-head">
+      <span class="card-name">${esc(name)}</span>
+      <span class="kind-tag" style="background:${color}">${kind.icon} ${esc(primary.kind)}</span>
+      ${tags.join("")}
+    </div>
+    <div class="meta-row">
+      <span class="cat-chip" style="background:${color}">${esc(primary.cat)}</span>
+      ${primary.owner ? `<span>👤 ${esc(primary.owner)}</span>` : ""}
+      <span>📦 ${entries.reduce((a,e)=>a+e.sites.length,0)} 个环境</span>
+    </div>
+    ${cols}
+    ${primary.remark ? `<div style="font-size:12px;color:#8c8c8c;">💡 ${esc(primary.remark)}</div>` : ""}
+  </div>`;
+}
+
+function render(){
+  renderCats(); renderEnvBar();
+  $("grpToggle").innerHTML = groupMode ? "🔗 分组卡" : "🔗 拆开模式";
+  const pool = SITES.filter(s => (activeCat==="全部"||s.cat===activeCat) && (activeEnv==="全部"||s.env===activeEnv));
+  if(!pool.length){ $("grid").innerHTML='<p style="color:#999;text-align:center;padding:40px;grid-column:1/-1">没有匹配的资源</p>'; return; }
+
+  let cards = "";
+  if(groupMode){
+    const groups = {};
+    pool.forEach(s => {
+      if(!groups[s.name]) groups[s.name] = {sites:[], envs: new Set()};
+      groups[s.name].sites.push(s);
+      groups[s.name].envs.add(s.env);
+    });
+    Object.keys(groups).sort((a,b)=>a.localeCompare(b,"zh-CN")).forEach(name=>{
+      const g = groups[name];
+      const prod = g.sites.filter(s=>s.env==="生产环境");
+      const test = g.sites.filter(s=>s.env==="测试环境");
+      const entries = [];
+      if(prod.length) entries.push({env:"生产环境", sites:prod});
+      if(test.length) entries.push({env:"测试环境", sites:test});
+      cards += entries.length>1 ? groupedCard(name, entries) : card(entries[0].sites[0], (KINDS[g.sites[0].kind]||KINDS["其他"]).color);
+    });
+  } else {
+    pool.slice().sort((a,b)=>(a.env==="生产环境"?0:1)-(b.env==="生产环境"?0:1)).forEach(s=>{
+      cards += card(s, (KINDS[s.kind]||KINDS["其他"]).color);
+    });
+  }
+  $("grid").innerHTML = cards;
+}
+
+function filterCat(c){ activeCat=c; render(); }
+function filterEnv(e){ activeEnv=e; render(); }
+function toggleGroup(){ groupMode=!groupMode; render(); }
+
+// 新增弹窗
+function openAdd(){
+  $("f_kind").value = "网站";
+  $("f_name").value = "";
+  $("f_env").value = "生产环境";
+  $("f_category").value = "";
+  $("f_domain").value = "";
+  $("f_public").value = "";
+  $("f_private").value = "";
+  $("f_connection").value = "";
+  $("f_owner").value = "";
+  $("f_monitor").value = "true";
+  $("f_remark").value = "";
+  onKindChange();
+  $("addModal").classList.add("show");
+}
+function closeAdd(){ $("addModal").classList.remove("show"); }
+function onKindChange(){
+  const preset = $("f_kind").value;
+  const meta = KINDS[preset] || KINDS["其他"];
+  const isCustom = (preset === "");
+  const isSiteOnly = (preset === "网站");
+  const isConnOnly = !isCustom && !isSiteOnly;
+  // 自定义 → 显示两种字段都能填
+  $("siteFields").style.display = isConnOnly ? "none" : "";
+  $("connFields").style.display = isSiteOnly ? "none" : "";
+  $("connHint").textContent = isCustom ? "连接串形式（任意协议）：" : meta.hint;
+  $("f_connection").placeholder = isCustom ? "如 vault://... / ldap://... / 任意连接信息" : meta.placeholder;
+  $("f_kind_custom").style.display = isCustom ? "" : "none";
+  updateMonitorBtn();
+}
+// 拨测按钮联动：仅在有 URL 时可勾选（HTTP 拨测的硬前提）
+function updateMonitorBtn(){
+  const hasUrl = $("f_domain").value.trim() || $("f_public").value.trim() || $("f_private").value.trim();
+  const preset = $("f_kind").value;
+  const isConnOnly = (preset !== "" && preset !== "网站"); // 缓存/MQ/数据库/存储
+  const monitorBox = $("f_monitor");
+  if(isConnOnly){
+    monitorBox.disabled = true;
+    monitorBox.value = "false";
+    monitorBox.style.opacity = ".5";
+    monitorBox.nextElementSibling && (monitorBox.parentElement.querySelector(".hint") || document.createElement("div"));
+  } else if(hasUrl){
+    monitorBox.disabled = false;
+    monitorBox.style.opacity = "1";
+  } else {
+    monitorBox.disabled = true;
+    monitorBox.value = "false";
+    monitorBox.style.opacity = ".5";
+    monitorBox.placeholder = "需先填写 URL 地址";
+  }
+}
+function submitAdd(){
+  const preset = $("f_kind").value;
+  const isCustom = (preset === "");
+  const kind = isCustom ? $("f_kind_custom").value.trim() : preset;
+  const name = $("f_name").value.trim();
+  const env = $("f_env").value;
+  const category = $("f_category").value.trim() || "未分类";
+  if(!name){ alert("请填写名称"); return; }
+  if(isCustom && !kind){ alert("请填写自定义类型名"); return; }
+  const record = {
+    id: Math.max(0, ...SITES.map(s=>s.id)) + 1,
+    name, kind, env, cat: category,
+    owner: $("f_owner").value.trim(),
+    remark: $("f_remark").value.trim(),
+    probe: $("f_monitor").value === "true",
+  };
+  // 三种字段都可选，有就存
+  if($("f_domain").value.trim()) record.domain = $("f_domain").value.trim();
+  if($("f_public").value.trim()) record.public = $("f_public").value.trim();
+  if($("f_private").value.trim()) record.inner = $("f_private").value.trim();
+  if($("f_connection").value.trim()) record.connection = $("f_connection").value.trim();
+  SITES.push(record);
+  closeAdd();
+  render();
+}
+
+render();
+</script>
+</body>
+</html>
