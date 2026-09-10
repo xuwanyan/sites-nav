@@ -47,4 +47,9 @@ print()
 
 import uvicorn
 
-uvicorn.run("app:app", host=os.environ.get("HOST", "127.0.0.1"), port=int(os.environ.get("PORT", "8000")), reload=True)
+# Windows 上 multiprocessing 用 spawn，子进程会把本文件当 __mp_main__ 重新 import；
+# 没有 __main__ 保护的话顶层 uvicorn.run 会被执行第二次 → RuntimeError
+# （"An attempt has been made to start a new process before the current process
+#  has finished its bootstrapping phase"）
+if __name__ == "__main__":
+    uvicorn.run("app:app", host=os.environ.get("HOST", "127.0.0.1"), port=int(os.environ.get("PORT", "8000")), reload=True)

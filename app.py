@@ -768,9 +768,6 @@ def monitor_status():
 
 # ── 批量导入 / 导出 ──
 
-# 导入/导出共用的字段清单（不含 id/时间戳，导入时自动生成）
-IMPORT_EXPORT_FIELDS = ["name", "category", "domain", "public_url", "private_url", "owner", "env", "remark", "monitor"]
-
 
 def _parse_bool(v) -> bool:
     if isinstance(v, bool):
@@ -808,6 +805,9 @@ def _normalize_import_row(row: dict, idx: int) -> dict:
         "env": env,
         "remark": str(row.get("remark") or row.get("备注") or "").strip(),
         "monitor": monitor,
+        # 拨测参数：留空即默认（状态码 200、不设超时），与 _export_csv 的列一一对应
+        "probe_status_codes": str(row.get("probe_status_codes") or row.get("拨测状态码") or "").strip(),
+        "probe_timeout": str(row.get("probe_timeout") or row.get("拨测超时") or "").strip(),
     }
 
 
@@ -858,8 +858,16 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
                 "env": item_data["env"],
                 "remark": item_data["remark"],
                 "monitor": item_data["monitor"],
+                "probe_status_codes": item_data.get("probe_status_codes", ""),
+                "probe_timeout": item_data.get("probe_timeout", ""),
             }).model_dump()
+            # 与创建/更新路径同一条校验线。之前导入漏掉这步，两条防线都能被批量导入绕过：
+            #   1. 勾选拨测但只有连接串（无 URL）→ 记录 monitor=true 却永远无可探测地址
+            #   2. SSRF 防护 _assert_public_url → 可把拨测指向内网/环回地址
+            _validate_site_payload(validated)
             parsed.append(validated)
+        except HTTPException as exc:
+            skipped.append({"reason": f"第{idx}行：{exc.detail}"})
         except (ValueError, Exception) as exc:  # noqa: BLE001
             skipped.append({"reason": str(exc)})
 
@@ -912,9 +920,9 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
 def _export_csv(sites: list) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    header_cn = ["系统名称", "资源类型", "分类", "域名", "公网地址", "内网地址", "连接串", "负责人", "环境标识", "备注", "拨测监控"]
+    header_cn = ["系统名称", "资源类型", "分类", "域名", "公网地址", "内网地址", "连接串", "负责人", "环境标识", "备注", "拨测监控", "拨测状态码", "拨测超时"]
     writer.writerow(header_cn)
-    key_map = ["name", "kind", "category", "domain", "public_url", "private_url", "connection", "owner", "env", "remark", "monitor"]
+    key_map = ["name", "kind", "category", "domain", "public_url", "private_url", "connection", "owner", "env", "remark", "monitor", "probe_status_codes", "probe_timeout"]
     for s in sites:
         writer.writerow([s.get(k, "") for k in key_map])
     # utf-8-sig 带 BOM，Excel 直接打开不乱码

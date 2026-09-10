@@ -148,14 +148,10 @@
     border-radius: 10px; padding: 0 7px; line-height: 18px; flex-shrink: 0;
   }
   .cat-item.active .cat-count { background: #bae0ff; color: #1677ff; }
-  .cat-chip {
-    font-size: 11px; padding: 1px 7px; border-radius: 4px; color: #fff;
-    display: inline-block;
-  }
-  .meta-row {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 12px; color: #8c8c8c;
-    margin-bottom: 10px;
+  /* 分组卡头部的副信息（分类 · 负责人）：灰字小字，非标签，不做视觉主角 */
+  .head-sub {
+    font-size: 12px; color: #8c8c8c; flex-shrink: 1; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .main-area { flex: 1; min-width: 0; }
   .env-bar-wrap { padding: 16px 24px 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -771,6 +767,7 @@ window.addEventListener("resize", syncHeadH);
 
 // ==================== 初始化 ====================
 updateAdminUI();
+syncGroupToggle();
 loadSites();
 
 // ==================== API 请求 ====================
@@ -933,16 +930,26 @@ function renderSites() {
 function toggleGroupMode() {
   groupByEnv = !groupByEnv;
   localStorage.setItem("groupByEnv", String(groupByEnv));
+  syncGroupToggle();
   renderSites();
   renderCategories();
+}
+
+// 同步「分组卡」切换按钮的文字与提示：按钮文字原先写死在 HTML 里，
+// 切换后界面上看不出当前处于哪种模式
+function syncGroupToggle() {
+  const btn = $("groupToggle");
+  if (!btn) return;
+  btn.textContent = groupByEnv ? "🔗 分组卡" : "🧩 拆开卡";
+  btn.title = groupByEnv
+    ? "当前：同站点名合并为一张分组卡（点击改为每个环境独立成卡）"
+    : "当前：每个环境独立一张卡（点击改为同站点名合并）";
 }
 
 function siteCard(s) {
   const envClassMap = { "生产环境": "env-prod", "测试环境": "env-test", "预发": "env-staging", "开发": "env-dev" };
   const envClass = envClassMap[s.env] || "env-other";
   const meta = kindMeta(s.kind || "网站");
-  const hasUrl = hasAnyUrl(s);
-  const hasConn = !!(s.connection || "").trim();
   const body = cardBodyHtml(s);
   return `
     <div class="card" style="border-top-color:${meta.color}">
@@ -953,9 +960,7 @@ function siteCard(s) {
           ${s.monitor ? `<span class="env-tag env-probe" title="${escapeAttr(probeTitle(s))}" id="probe-${escapeAttr(s.id)}">已监控</span>` : `<span class="env-tag env-off">未加入监控</span>`}
           ${s.env ? `<span class="env-tag ${envClass}">${escapeHtml(s.env)}</span>` : ""}
           ${token ? `<span class="card-actions">
-            ${hasUrl ? (s.monitor
-              ? `<button class="btn btn-default btn-sm" onclick="quickMonitorOff('${escapeAttr(s.id)}')">⏹️ 取消监控</button>`
-              : `<button class="btn btn-default btn-sm" onclick="openProbeModal('${escapeAttr(s.id)}')">📡 加入监控</button>`) : ""}
+            ${monitorBtn(s)}
             <button class="btn btn-default btn-sm" onclick="openEditSite('${escapeAttr(s.id)}')">✏️ 编辑</button>
             <button class="btn btn-danger btn-sm" onclick="openDeleteModal('${escapeAttr(s.id)}', '${escapeAttr(s.name)}', ${s.env ? `'${escapeAttr(s.env)}'` : "null"})">🗑️ 删除</button>
           </span>` : ""}
@@ -978,6 +983,14 @@ function hasAnyUrl(s) {
     (s.public_url || "").trim() ||
     (s.private_url || "").trim()
   );
+}
+
+// 监控快捷按钮：无 URL 的资源（只有连接串）不出按钮 —— 后端拨测要求公网 URL，点了必然 400
+function monitorBtn(s) {
+  if (!hasAnyUrl(s)) return "";
+  return s.monitor
+    ? `<button class="btn btn-default btn-sm" onclick="quickMonitorOff('${escapeAttr(s.id)}')">⏹️ 取消监控</button>`
+    : `<button class="btn btn-default btn-sm" onclick="openProbeModal('${escapeAttr(s.id)}')">📡 加入监控</button>`;
 }
 
 // 卡片主体：URL 行 + 连接块（哪个填了显示哪个，都填都显示）
@@ -1030,12 +1043,12 @@ function envCol(env, entrySites) {
   // 同环境多条（少见），逐条渲染卡片主体
   let body = "";
   entrySites.forEach(s => { body += `<div class="card-body">${cardBodyHtml(s)}</div>`; });
-  const someProbe = entrySites.some(s => s.monitor);
   return `<div class="env-col">
     <div class="env-col-head">
       <span class="env-col-label ${isProd ? "prod" : "test"}">${label}</span>
       <span style="display:flex; align-items:center; gap:10px;">
         ${entrySites.filter(s => s.monitor).map(s => `<span class="env-tag env-probe" id="probe-${escapeAttr(s.id)}" title="${escapeAttr(probeTitle(s))}" style="font-size:11px">📡 已监控</span>`).join("")}
+        ${token ? entrySites.map(s => monitorBtn(s)).join("") : ""}
         ${token ? entrySites.map(s => `<button class="btn btn-default btn-sm" onclick="openEditSite('${escapeAttr(s.id)}')">✏️ 编辑</button>`).join("") : ""}
         ${token ? entrySites.map(s => `<button class="btn btn-danger btn-sm" onclick="openDeleteModal('${escapeAttr(s.id)}','${escapeAttr(s.name)}','${escapeAttr(env)}')">🗑️ 删除</button>`).join("") : ""}
       </span>
@@ -1046,38 +1059,29 @@ function envCol(env, entrySites) {
 }
 
 // 分组卡：同站点名，生产/测试并排展示
+// 头部刻意精简：类型图标并进名字；分类/负责人只在实际有值时用灰字点号列出。
+// 环境标签不再出现（下方列头已有 🔴生产/🟢测试，是重复信息）；
+// 监控状态由各列自己的 📡 徽标与按钮表达，头部不再汇总。
 function groupCard(group) {
   const { name, envs, sites } = group;
   const sample = sites[0];
   const meta = kindMeta(sample.kind || "网站");
   const color = meta.color;
-  const envClass = { "生产环境": "env-prod", "测试环境": "env-test" };
   const shown = activeEnv === "全部" ? ["生产环境", "测试环境"] : [activeEnv];
   const cols = shown
     .filter(e => envs.has(e))
     .map(e => envCol(e, sites.filter(s => s.env === e)))
     .join("");
-  const envTags = shown
-    .filter(e => envs.has(e))
-    .map(e => `<span class="env-tag ${envClass[e]}">${escapeHtml(e)}</span>`)
-    .join("");
-  const hasMonitor = sites.some(s => s.monitor);
-  const allOff = sites.every(s => !s.monitor);
-  const probeBadge = hasMonitor
-    ? `<span class="env-tag env-probe" title="${escapeAttr(`📡 部分环境已加入拨测\n${sites.map(s => `${s.env}: ${probeJobName(s)}`).join('\n')}`)}">部分监控</span>`
-    : (allOff ? `<span class="env-tag env-off">均未加入监控</span>` : "");
+  // 非空才列，避免「未分类」「—」这类占位噪声
+  const subParts = [
+    (sample.category || "").trim(),
+    (sample.owner || "").trim() ? `👤 ${sample.owner.trim()}` : "",
+  ].filter(Boolean);
+  const sub = subParts.length ? `<span class="head-sub">${escapeHtml(subParts.join(" · "))}</span>` : "";
   return `<div class="card" style="border-top-color:${color}">
     <div class="card-header">
-      <span class="card-name">${escapeHtml(name)}</span>
-      <span style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-        <span class="kind-tag" style="background:${color}" title="${escapeAttr(sample.kind || "网站")}">${meta.icon} ${escapeHtml(sample.kind || "网站")}</span>
-        ${probeBadge}
-        ${envTags}
-        <span style="font-size:11px; color:#8c8c8c;">👤 ${escapeHtml(sample.owner || "—")}</span>
-      </span>
-    </div>
-    <div class="meta-row"><span class="cat-chip" style="background:${color}">${escapeHtml(catOf(sample))}</span>
-      <span>📦 ${sites.length} 个环境</span>
+      <span class="card-name" title="${escapeAttr(sample.kind || "网站")}">${meta.icon} ${escapeHtml(name)}</span>
+      ${sub}
       <button class="copy-group-btn" onclick="copyGroupInfo(this, ${escapeAttr(JSON.stringify(sites.map(s => s.id)))})">📋 复制全部信息</button>
     </div>
     ${cols}
@@ -1170,10 +1174,10 @@ function updateAdminUI() {
 }
 
 // ==================== 批量导入 / 导出 ====================
-const CSV_PLACEHOLDER = `系统名称,资源类型,分类,域名,公网地址,内网地址,连接串,负责人,环境标识,备注,拨测监控
-GitLab,网站,代码仓库,gitlab.company.com,https://git.company.com,http://10.0.0.10:8080,,张三,生产环境,SSO 登录,是
-Redis-主库,缓存,中间件,,,,redis://10.0.1.5:6379/0,李四,生产环境,主从架构,否
-Kafka,消息队列,中间件,,,,10.0.3.4:9092,王五,生产环境,,否`;
+const CSV_PLACEHOLDER = `系统名称,资源类型,分类,域名,公网地址,内网地址,连接串,负责人,环境标识,备注,拨测监控,拨测状态码,拨测超时
+GitLab,网站,代码仓库,gitlab.company.com,https://git.company.com,http://10.0.0.10:8080,,张三,生产环境,SSO 登录,是,200|301,3s
+Redis-主库,缓存,中间件,,,,redis://10.0.1.5:6379/0,李四,生产环境,主从架构,否,,
+Kafka,消息队列,中间件,,,,10.0.3.4:9092,王五,生产环境,,否,,`;
 
 const JSON_PLACEHOLDER = `[
   {
