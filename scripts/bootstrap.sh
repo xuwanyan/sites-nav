@@ -25,7 +25,6 @@ REPO_URL="${REPO_URL:-https://github.com/xuwanyan/sites-nav.git}"
 # APP_DIR / BRANCH 取位置参数，环境变量兜底（位置参数能穿过 sudo）
 APP_DIR="${1:-${APP_DIR:-/opt/sites-nav}}"
 BRANCH="${2:-${BRANCH:-main}}"
-PORT="${PORT:-8000}"
 IMAGE="${IMAGE:-}"
 
 NEW_PASS=""
@@ -137,6 +136,10 @@ else
 fi
 
 # ── 5. 端口冲突处理 ─────────────────────────────────────────────
+# PORT：shell 变量 > .env 里的 PORT > 默认 8000，与 docker-compose.yml 的 ${PORT:-8000} 同源
+PORT="${PORT:-$(grep -E '^PORT=' .env 2>/dev/null | head -1 | cut -d= -f2-)}"
+PORT="${PORT:-8000}"
+export PORT
 # 只清自己项目占的端口；被无关进程占用时留给 deploy.sh 报清楚，不替用户杀进程
 if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${PORT}$" && [ -n "$(docker compose ps -q 2>/dev/null)" ]; then
   WARN "端口 $PORT 被现有容器占用，先停止旧容器"

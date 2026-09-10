@@ -34,6 +34,8 @@ docker compose up -d --build
 
 浏览器访问 `http://<服务器IP>:8000`。
 
+> 服务器一键部署（拉代码 + 构建镜像 + 启动 + 探活，一条命令）见 [DEPLOY.md](DEPLOY.md)。
+
 > **⚠️ 安全警告**：`ADMIN_PASSWORD` 留空 = 只读模式（写操作禁用）。任何已知占位符（`PleaseChangeMe` / `changeme` / `password` / `admin` / `123456` 等）都被后端识别为未配置，自动降级只读。如果生产环境忘记改密码，应用会启动但无法写数据——这是预期行为。
 
 ## 入口脚本

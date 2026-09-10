@@ -17,6 +17,12 @@ ENV_FILE="$DIR/.env"
 DATA_DIR="$DIR/data"
 MODE="${1:-}"
 
+# 端口：shell 变量 > .env 里的 PORT > 默认 8000
+# 与 docker-compose.yml 的 ${PORT:-8000} 同源，避免"检查的端口"和"实际绑定的端口"不一致
+PORT="${PORT:-$(grep -E '^PORT=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)}"
+PORT="${PORT:-8000}"
+export PORT
+
 # 已知占位符密码（与 app.py 保持一致）
 # app.py 是 strip().lower() 后比对，这里同样处理，
 # 否则 "Admin" 会被当作真密码接受，而应用实际已降级只读
@@ -109,16 +115,16 @@ setup_password() {
 # ── 端口检查 ──
 check_port() {
     if command -v ss >/dev/null 2>&1; then
-        if ss -ltn 2>/dev/null | grep -q ':8000 '; then
+        if ss -ltn 2>/dev/null | grep -q ":${PORT} "; then
             local pid
-            pid=$(ss -ltnp 2>/dev/null | grep ':8000 ' | grep -oP 'pid=\K\d+' | head -1)
-            echo "❌ 端口 8000 已被占用${pid:+ (PID $pid)}"
+            pid=$(ss -ltnp 2>/dev/null | grep ":${PORT} " | grep -oP 'pid=\K\d+' | head -1)
+            echo "❌ 端口 $PORT 已被占用${pid:+ (PID $pid)}"
             echo "   先执行: ./deploy.sh --stop 或 kill $pid"
             exit 1
         fi
     elif command -v netstat >/dev/null 2>&1; then
-        if netstat -ltn 2>/dev/null | grep -q ':8000 '; then
-            echo "❌ 端口 8000 已被占用"
+        if netstat -ltn 2>/dev/null | grep -q ":${PORT} "; then
+            echo "❌ 端口 $PORT 已被占用"
             exit 1
         fi
     fi
@@ -128,9 +134,9 @@ check_port() {
 wait_healthy() {
     echo -n "   等待容器健康..."
     for i in $(seq 1 30); do
-        if curl -sf http://127.0.0.1:8000/health >/dev/null 2>&1; then
+        if curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
             local h
-            h=$(curl -s http://127.0.0.1:8000/health)
+            h=$(curl -s "http://127.0.0.1:${PORT}/health")
             if echo "$h" | grep -q "data_warning"; then
                 echo " ⚠️ 恢复"
                 echo "   警告: $(echo "$h" | grep -oP 'data_warning.{0,60}')"
@@ -154,7 +160,7 @@ do_deploy() {
     echo ""
     echo "══════════════════════════════════════"
     echo "  ✅ 部署完成"
-    echo "  访问: http://$(hostname -I 2>/dev/null | awk '{print $1}'):8000"
+    echo "  访问: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${PORT}"
     echo "  日志: docker compose logs -f"
     echo "  停止: ./deploy.sh --stop"
     echo "══════════════════════════════════════"
@@ -180,7 +186,7 @@ do_status() {
     docker compose ps
     echo ""
     echo "健康状态:"
-    curl -s http://127.0.0.1:8000/health 2>/dev/null || echo "  服务未运行"
+    curl -s "http://127.0.0.1:${PORT}/health" 2>/dev/null || echo "  服务未运行"
     echo ""
     echo "数据目录: $DATA_DIR"
     ls -lh "$DATA_DIR" 2>/dev/null || echo "  (空)"

@@ -4,7 +4,8 @@ services:
     image: sites-nav:latest
     # 不设 container_name：允许同名镜像多实例；需要固定名可手动加
     ports:
-      - "8000:8000"
+      # 宿主端口可配（.env 里写 PORT=8080 即生效），容器内固定 8000
+      - "${PORT:-8000}:8000"
     # 从 .env 读取所有变量（含未来新增的），避免硬编码白名单漏掉新变量
     env_file: .env
     volumes:
