@@ -4,7 +4,9 @@ WORKDIR /app
 
 # 先装依赖，利用 Docker 层缓存（依赖变动少时重建快）
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# -i 指定阿里云 PyPI 镜像：国内构建环境直连 pypi.org 常超时
+RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
+
 
 # 拷贝应用代码与静态资源
 COPY app.py ./
