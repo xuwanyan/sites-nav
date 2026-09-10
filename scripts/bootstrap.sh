@@ -5,8 +5,13 @@ set -euo pipefail
 # sites-nav 服务器引导：拉取代码 → 构建镜像 → 启动 → 探活
 #
 # 用法:
-#   sudo bash scripts/bootstrap.sh                  # 首次部署 / 重新部署
-#   REPO_URL=git@github.com:x/sites-nav.git sudo -E bash scripts/bootstrap.sh
+#   sudo bash scripts/bootstrap.sh                     # 首次部署 / 重新部署
+#   sudo bash scripts/bootstrap.sh /data/sites-nav     # 指定安装目录
+#   sudo bash scripts/bootstrap.sh /data/sites-nav v1.2 # 指定分支或标签
+#
+# 参数用位置传入，不用环境变量 —— sudo 会过滤环境，APP_DIR=x sudo bash
+# 这种写法变量会静默丢失（除非加 -E）。偏要用环境变量的话：
+#   export APP_DIR=/data/sites-nav && sudo -E bash scripts/bootstrap.sh
 #
 # 幂等：可重复执行，每次都部署远端最新代码。
 #       .env 和 data/ 被 gitignore，git 操作不会碰它们（数据和密码不丢）。
@@ -17,8 +22,9 @@ set -euo pipefail
 # ═════════════════════════════════════════════════════════════════
 
 REPO_URL="${REPO_URL:-https://github.com/xuwanyan/sites-nav.git}"
-BRANCH="${BRANCH:-main}"
-APP_DIR="${APP_DIR:-/opt/sites-nav}"
+# APP_DIR / BRANCH 取位置参数，环境变量兜底（位置参数能穿过 sudo）
+APP_DIR="${1:-${APP_DIR:-/opt/sites-nav}}"
+BRANCH="${2:-${BRANCH:-main}}"
 PORT="${PORT:-8000}"
 IMAGE="${IMAGE:-}"
 
@@ -51,14 +57,15 @@ _is_placeholder() {
 # ── 1. 拉取代码 ─────────────────────────────────────────────────
 LOG "拉取代码 $REPO_URL ($BRANCH) -> $APP_DIR"
 if [ -d "$APP_DIR/.git" ]; then
-  OLD="$(git -C "$APP_DIR" rev-parse HEAD 2>/dev/null || echo none)"
-  git -C "$APP_DIR" fetch --tags origin "$BRANCH"
-  NEW="$(git -C "$APP_DIR" rev-parse "origin/$BRANCH")"
+  # 不用 git -C：老版本 git (< 2.11，CentOS 7 / Alinux 常见) 不支持该选项
+  OLD="$(cd "$APP_DIR" && git rev-parse HEAD 2>/dev/null || echo none)"
+  (cd "$APP_DIR" && git fetch --tags origin "$BRANCH")
+  NEW="$(cd "$APP_DIR" && git rev-parse "origin/$BRANCH")"
   if [ "$OLD" = "$NEW" ]; then
     OK "代码已是最新 ($NEW)"
   else
-    # reset 而非 pull：部署机不应有本地提交漂移。ignored 文件不受影响。
-    git -C "$APP_DIR" checkout -B "$BRANCH" "$NEW"
+    # checkout -B 而非 pull：部署机不应有本地提交漂移。ignored 文件不受影响。
+    (cd "$APP_DIR" && git checkout -B "$BRANCH" "$NEW")
     OK "已更新 $(printf '%.7s' "$OLD") -> $(printf '%.7s' "$NEW")"
   fi
 elif [ -e "$APP_DIR" ]; then
@@ -76,7 +83,15 @@ OK "已补齐脚本执行位"
 # ── 2. 构建镜像 ─────────────────────────────────────────────────
 LOG "构建镜像"
 docker compose build
-IMAGE="${IMAGE:-$(docker compose config --images | head -1)}"
+if [ -z "$IMAGE" ]; then
+  # 优先用 compose 自己的解析结果
+  IMAGE="$(docker compose config --images 2>/dev/null | head -1 || true)"
+fi
+if [ -z "$IMAGE" ]; then
+  # compose < 2.3 没有 config --images，退回直接读 compose 文件
+  IMAGE="$(grep -E '^[[:space:]]*image:' docker-compose.yml 2>/dev/null | head -1 | awk '{print $NF}' | tr -d '"')"
+fi
+IMAGE="${IMAGE:-sites-nav:latest}"
 OK "镜像就绪: $IMAGE"
 
 # ── 3. 修 data/ 目录归属 ────────────────────────────────────────
