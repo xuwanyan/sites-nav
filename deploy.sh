@@ -18,10 +18,13 @@ DATA_DIR="$DIR/data"
 MODE="${1:-}"
 
 # 已知占位符密码（与 app.py 保持一致）
+# app.py 是 strip().lower() 后比对，这里同样处理，
+# 否则 "Admin" 会被当作真密码接受，而应用实际已降级只读
 _is_placeholder() {
-    local v="${1:-}"
+    local v
+    v=$(printf '%s' "${1:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')
     case "$v" in
-        ""|"PleaseChangeMe"|"changeme"|"change_me"|"password"|"123456"|"admin"|"admin123") return 0 ;;
+        ""|"pleasechangeme"|"changeme"|"change_me"|"password"|"123456"|"admin"|"admin123") return 0 ;;
         *) return 1 ;;
     esac
 }

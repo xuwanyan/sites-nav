@@ -8,3 +8,4 @@ data/
 Dockerfile
 docker-compose.yml
 .dockerignore
+scripts/
