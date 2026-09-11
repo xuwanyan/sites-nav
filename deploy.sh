@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # ═══════════════════════════════════════════════════════
-# sites-nav Docker 部署脚本
+# sites-nav 运维脚本：部署 / 更新 / 停止 / 状态
+# 定位：本地已克隆代码后的日常运维。服务器首次拉代码+构建用 scripts/bootstrap.sh
 # 用法:
 #   ./deploy.sh              交互式部署（首次）
-#   ./deploy.sh --deploy     非交互式部署（服务器，.env 已配好）
+#   ./deploy.sh --deploy     非交互式部署（.env 已配好）
 #   ./deploy.sh --update     拉取新镜像重启
 #   ./deploy.sh --stop       停止容器
 #   ./deploy.sh --status     查看状态

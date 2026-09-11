@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """导入功能端到端测试。
 
-只依赖 sites-nav 自身（不像 e2e_verify.py 需要 categraf 管理端）。
+只依赖 sites-nav 自身，不需要 categraf 管理端。
 跑法: python e2e_import.py
 
 覆盖：JSON / CSV / 中英文表头 / 查重 / 非法行 / 与创建路径的校验一致性。
