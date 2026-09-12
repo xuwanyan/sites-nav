@@ -3,3 +3,7 @@ uvicorn[standard]==0.48.0
 pydantic==2.13.4
 requests==2.33.1
 bcrypt==4.0.1
+pymysql==1.1.1
+# MySQL 8 默认认证插件 caching_sha2_password 需要它，缺失会报
+# NotSupportedError: 'cryptography' package is required for caching_sha2_password
+cryptography==43.0.1

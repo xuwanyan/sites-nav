@@ -18,12 +18,14 @@ if not ENV_FILE.exists():
         ENV_FILE.write_bytes(example.read_bytes())
         print(f"[OK] created .env from .env.example")
     else:
-        ENV_FILE.write_text("# 请改成强密码；留空 = 只读模式\nADMIN_PASSWORD=\n", encoding="utf-8")
-        print(f"[OK] created .env (empty password, read-only mode)")
+        ENV_FILE.write_text(
+            "# 首次启动种子 admin 的密码；留空则自动生成随机密码并打印一次\nADMIN_PASSWORD=\n",
+            encoding="utf-8")
+        print(f"[OK] created .env (password empty, generated on first start)")
 else:
     print(f"[OK] .env exists")
 
-# 2. 检查管理密码
+# 2. 检查管理密码（仅用于首次启动种子 admin 账号，之后在后台「用户管理」里维护）
 with ENV_FILE.open("r", encoding="utf-8") as f:
     for line in f:
         line = line.strip()
@@ -34,9 +36,20 @@ with ENV_FILE.open("r", encoding="utf-8") as f:
                 os.environ["ADMIN_PASSWORD"] = pwd
                 break
     else:
-        print(f"[WARN] no admin password in .env, read-only mode")
+        print(f"[WARN] no admin password in .env, a random one will be generated on first start")
 
-# 3. 启动
+# 3. 检查 MySQL（用户与权限存储，必填）
+_mh = os.environ.get("MYSQL_HOST", "").strip()
+if not _mh:
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        if line.startswith("MYSQL_HOST="):
+            _mh = line.split("=", 1)[1].strip()
+            break
+if not _mh:
+    print("[WARN] MYSQL_HOST 未设置：用户与权限已迁移到 MySQL，应用启动会中止。")
+    print("       本地开发可先跑 `docker compose up -d mysql`，或在 .env 填 MYSQL_* 指向已有实例。")
+
+# 4. 启动
 print()
 print("=" * 40)
 print("  sites-nav starting...")

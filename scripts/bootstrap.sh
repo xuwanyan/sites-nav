@@ -41,9 +41,9 @@ docker compose version >/dev/null 2>&1 || FAIL "缺少 Docker Compose v2，请�
 docker info >/dev/null 2>&1 || FAIL "Docker 未运行或无权限（检查 docker 组 / 用 sudo）"
 
 # 已知占位符密码 —— 必须与 app.py 的 _PLACEHOLDER_PASSWORDS 保持一致
-# 命中即视为"未配置"，app 会自动降级只读模式
+# 命中即视为"未配置"，首次启动会自动生成随机密码
 # 注意：app.py 是先 strip().lower() 再比对，这里必须同样处理，
-# 否则 "Admin" 这类写法会被误判为真密码，结果应用静默降级只读
+# 否则 "Admin" 这类写法会被误判为真密码，占位符就被当真密码写进 users 表
 _is_placeholder() {
   local v
   v="$(printf '%s' "${1:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
@@ -133,6 +133,34 @@ if _is_placeholder "$CUR"; then
   echo ""
 else
   OK "ADMIN_PASSWORD 已配置"
+fi
+
+# MySQL 密码：用户与权限存储。MYSQL_HOST 指向 compose 内置 mysql 服务（默认）时自动生成；
+# 指向外部实例时绝不能代填，否则应用会拿随机密码去连别人的库
+MYSQL_HOST_VAL="$(sed -n 's/^MYSQL_HOST=//p' .env | head -1)"
+MYSQL_HOST_VAL="${MYSQL_HOST_VAL:-mysql}"
+if [ "$MYSQL_HOST_VAL" != "mysql" ]; then
+  WARN "MYSQL_HOST=$MYSQL_HOST_VAL 指向外部数据库，请自行填写 MYSQL_USER / MYSQL_PASSWORD"
+else
+  if [ -z "$(sed -n 's/^MYSQL_PASSWORD=//p' .env | head -1)" ]; then
+    MP="$(openssl rand -hex 24)"
+    T="$(mktemp)"
+    awk -v p="$MP" 'BEGIN{FS=OFS="="} $1=="MYSQL_PASSWORD"{print "MYSQL_PASSWORD=" p; next} {print}' .env > "$T"
+    mv "$T" .env
+    chmod 600 .env
+    OK "MYSQL_PASSWORD 已生成并写入 .env"
+  else
+    OK "MYSQL_PASSWORD 已配置"
+  fi
+  # MYSQL_ROOT_PASSWORD 只在数据卷首次初始化时生效；缺失时 compose 的 :? 守卫会直接报错
+  if [ -z "$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' .env | head -1)" ]; then
+    MR="$(openssl rand -hex 24)"
+    T="$(mktemp)"
+    awk -v p="$MR" 'BEGIN{FS=OFS="="} $1=="MYSQL_ROOT_PASSWORD"{print "MYSQL_ROOT_PASSWORD=" p; next} {print}' .env > "$T"
+    mv "$T" .env
+    chmod 600 .env
+    OK "MYSQL_ROOT_PASSWORD 已生成（仅数据卷首次初始化生效）"
+  fi
 fi
 
 # ── 5. 端口冲突处理 ─────────────────────────────────────────────

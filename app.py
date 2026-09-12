@@ -1,15 +1,20 @@
+import contextlib
+import csv
+import datetime as _dt
+import functools
 import hashlib
 import hmac
-import csv
 import io
 import json
 import os
 import secrets
+import sys
 import threading
 import time
 from pathlib import Path
 from typing import Literal
 
+import pymysql
 import requests
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response
@@ -44,8 +49,8 @@ def _load_env_file(path: Path) -> None:
 
 _load_env_file(BASE_DIR / ".env")
 
-# 管理密码：仅用于首次启动种子 admin 账号（向后兼容旧的单密码部署）。
-# 种子后 users.json 是唯一真相源，此变量不再被读取。
+# 管理密码：仅用于首次启动种子 admin 账号（用户表为空时）。
+# 种子后 MySQL users 表是唯一真相源，此变量不再被读取。
 # 已知占位符视为未配置，防止 .env.example / Docker 路径下的默认密码成为可用凭证
 _PLACEHOLDER_PASSWORDS = {"", "PleaseChangeMe", "changeme", "change_me", "password", "123456", "admin", "admin123"}
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
@@ -69,9 +74,32 @@ _sync_status: dict = {}
 # 数据文件读写锁：防止并发请求读改写丢数据（RLock 允许 _load 内部调用 _save）
 _file_lock = threading.RLock()
 
-# 用户数据文件（多用户认证）。与 sites.json 同目录，备份策略一致
-USERS_FILE = DATA_DIR / "users.json"
-_users_lock = threading.RLock()
+# ── 用户与权限存储：MySQL ──
+# 站点数据仍在 data/sites.json（单文件，备份即复制）；用户/角色/启用状态在 MySQL。
+# 换库的原因：users.json 损坏时应用会静默全员锁死（_load_users 遇损坏返回空列表，
+# 而 _seed_admin_if_needed 见文件存在就跳过），没有任何提示。MySQL 不存在"整个文件坏掉"。
+MYSQL_HOST = os.environ.get("MYSQL_HOST", "").strip()
+MYSQL_PORT = int(os.environ.get("MYSQL_PORT", "3306") or "3306")
+MYSQL_USER = os.environ.get("MYSQL_USER", "sites_nav").strip()
+MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "").strip()
+MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "sites_nav").strip()
+MYSQL_CONNECT_TIMEOUT = int(os.environ.get("MYSQL_CONNECT_TIMEOUT", "3") or "3")
+
+# 每次请求开短连接、用完即关，不做连接池：单实例低流量，池里过期连接/连接泄漏的
+# 排查成本高于省下的毫秒（LAN 内建连约 1ms）。_verify_token 每个 API 请求查一次，可接受。
+_MYSQL_KWARGS = dict(
+    host=MYSQL_HOST,
+    port=MYSQL_PORT,
+    user=MYSQL_USER,
+    password=MYSQL_PASSWORD,
+    database=MYSQL_DATABASE,
+    charset="utf8mb4",
+    autocommit=False,
+    connect_timeout=MYSQL_CONNECT_TIMEOUT,
+    read_timeout=10,
+    write_timeout=10,
+    cursorclass=pymysql.cursors.DictCursor,
+)
 
 app = FastAPI(title="内部系统导航")
 
@@ -280,53 +308,157 @@ def _load_mutate(fn) -> list:
         return sites
 
 
-# ── 用户存储（data/users.json，照搬 sites.json 的原子写+锁模式）──
+# ── 用户存储（MySQL users 表）──
+
+# 字段与旧 data/users.json 的记录一一对应，便于按 scripts/migrate_users.py 原样迁移
+USERS_DDL = """
+CREATE TABLE IF NOT EXISTS users (
+  id            CHAR(8)      NOT NULL,
+  username      VARCHAR(32)  NOT NULL,
+  password_hash VARCHAR(128) NOT NULL,
+  role          VARCHAR(8)   NOT NULL DEFAULT 'user',
+  enabled       TINYINT(1)   NOT NULL DEFAULT 1,
+  pwd_epoch     INT          NOT NULL DEFAULT 0,
+  created_at    DATETIME     NULL,
+  updated_at    DATETIME     NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_username (username),
+  KEY idx_role (role)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户与权限'
+"""
+
+# SELECT 列清单：调用方拼 f"SELECT {_USER_COLS} ..."
+_USER_COLS = "id, username, password_hash, role, enabled, pwd_epoch, created_at, updated_at"
 
 
-def _load_users() -> list:
-    """读取全部用户。文件不存在/损坏返回 []（不做备份恢复——用户少且敏感，损坏应人工介入）"""
-    with _users_lock:
-        if not USERS_FILE.exists():
-            return []
+class DbDown(Exception):
+    """MySQL 不可用。单独一类异常，供上层转 503、且不计入登录失败次数"""
+
+
+def _db_connect():
+    """建连失败抛 DbDown，调用方不要直接依赖 pymysql 异常类型"""
+    try:
+        return pymysql.connect(**_MYSQL_KWARGS)
+    except pymysql.MySQLError as exc:
+        raise DbDown(str(exc)) from exc
+
+
+@contextlib.contextmanager
+def _db_conn():
+    """短连接上下文：退出即关闭，不留连接池"""
+    conn = _db_connect()
+    try:
+        yield conn
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
+@contextlib.contextmanager
+def _db_tx():
+    """事务上下文：正常退出 commit，异常回滚。
+    多步检查（如"至少保留一个管理员"）必须用它，否则检查与更新之间可被并发请求插队"""
+    conn = _db_connect()
+    cur = conn.cursor()
+    try:
+        yield cur
+        conn.commit()
+    except Exception:
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        raise
+    finally:
+        with contextlib.suppress(Exception):
+            cur.close()
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
+def _db_fetchall(sql, args=()):
+    """只读查询。连接级失败（MySQL 重启/网络抖动）重连重试一次"""
+    last = None
+    for _ in range(2):
         try:
-            raw = json.loads(USERS_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return []
-        if not isinstance(raw, list):
-            return []
-        return [u for u in raw if isinstance(u, dict) and u.get("username")]
+            with _db_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, args)
+                    return cur.fetchall()
+        except DbDown:
+            raise
+        except pymysql.MySQLError as exc:
+            last = exc
+    raise DbDown(str(last)) from last
 
 
-def _save_users_unlocked(users: list) -> None:
-    """无锁写入：调用方必须已持有 _users_lock。单份 .bak + tmp+os.replace 原子写"""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if USERS_FILE.exists():
+def _db_execute(sql, args=()):
+    """写操作：commit 后返回影响行数。
+    不重试 —— 语句可能已落库，重试有重复副作用风险。
+    IntegrityError 原样抛出（唯一约束等业务冲突），其余 MySQLError 归入 DbDown"""
+    try:
+        with _db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, args)
+                conn.commit()
+                return cur.rowcount
+    except pymysql.err.IntegrityError:
+        raise
+    except pymysql.MySQLError as exc:
+        raise DbDown(str(exc)) from exc
+
+
+def _db_pong() -> bool:
+    """MySQL 是否可用。/health 用它把容器健康检查挂到数据库状态上"""
+    try:
+        _db_fetchall("SELECT 1")
+        return True
+    except DbDown:
+        return False
+
+
+def _db_guard(fn):
+    """数据库不可用时返回 503（区别于业务错误）。
+    站点接口不装饰，改由 _require_user 内部转换"""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
         try:
-            USERS_FILE.with_suffix(".bak").write_bytes(USERS_FILE.read_bytes())
-        except OSError:
-            pass
-    tmp = USERS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(users, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, USERS_FILE)
+            return fn(*args, **kwargs)
+        except DbDown:
+            raise HTTPException(status_code=503, detail="用户服务暂不可用，请稍后再试")
+    return wrapper
 
 
-def _load_users_mutate(fn) -> list:
-    """原子读-改-写：fn(users) 原地修改。fn 抛 HTTPException 时不写入"""
-    with _users_lock:
-        users = _load_users()
-        fn(users)
-        _save_users_unlocked(users)
-        return users
+def _fmt_dt(v) -> str:
+    """DATETIME → 'YYYY-MM-DD HH:MM:SS'，与旧 users.json 的字符串格式保持一致"""
+    if v is None:
+        return ""
+    if isinstance(v, (_dt.datetime, _dt.date)):
+        return v.strftime("%Y-%m-%d %H:%M:%S")
+    return str(v)
 
 
-def _find_user(users: list, *, uid: str | None = None, username: str | None = None) -> dict | None:
-    """按 id 或 username（大小写不敏感）查用户"""
-    for u in users:
-        if uid and u.get("id") == uid:
-            return u
-        if username and u.get("username", "").lower() == username.lower():
-            return u
-    return None
+def _user_row(row) -> dict:
+    """MySQL 行 → 与原 users.json 记录同形状的 dict（TINYINT→bool 等类型归一化）"""
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "password_hash": row["password_hash"],
+        "role": row["role"],
+        "enabled": bool(row["enabled"]),
+        "pwd_epoch": int(row["pwd_epoch"]),
+        "created_at": _fmt_dt(row["created_at"]),
+        "updated_at": _fmt_dt(row["updated_at"]),
+    }
+
+
+def _get_user(*, uid: str | None = None, username: str | None = None) -> dict | None:
+    """按 id 或 username（大小写不敏感）取用户；不存在返回 None"""
+    if uid is not None:
+        rows = _db_fetchall(f"SELECT {_USER_COLS} FROM users WHERE id = %s", (uid,))
+    elif username is not None:
+        rows = _db_fetchall(f"SELECT {_USER_COLS} FROM users WHERE LOWER(username) = LOWER(%s)", (username,))
+    else:
+        return None
+    return _user_row(rows[0]) if rows else None
 
 
 # ── 密码哈希：优先 bcrypt，未装则退 pbkdf2_hmac（标准库，零依赖）──
@@ -364,42 +496,83 @@ except ImportError:
 
 
 def _validate_password(pw: str) -> None:
-    """强密码校验：≥10 位，含字母+数字。不通过抛 400"""
+    """强密码校验：≥10 位、含字母+数字、≤72 字节。不通过抛 400。
+    72 字节是 bcrypt 的硬边界：超出部分被静默丢弃，用户以为设了长密码实际只有前 72 字节生效"""
     if len(pw) < 10:
         raise HTTPException(status_code=400, detail="密码至少 10 位")
     if not any(c.isalpha() for c in pw) or not any(c.isdigit() for c in pw):
         raise HTTPException(status_code=400, detail="密码必须同时包含字母和数字")
+    if len(pw.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="密码过长（bcrypt 上限 72 字节）")
+
+
+_dummy_hash_cache = None
+
+
+def _dummy_hash() -> str:
+    """校验假哈希：用户不存在时也跑一次 bcrypt，让"用户不存在"和"密码错"耗时一致（防枚举）"""
+    global _dummy_hash_cache
+    if _dummy_hash_cache is None:
+        _dummy_hash_cache = _hash_password("invalid-password-for-timing-parity")
+    return _dummy_hash_cache
 
 
 def _seed_admin_if_needed() -> None:
-    """首次启动且无用户时，从 .env 的 ADMIN_PASSWORD 种子 admin 账号。
-    ADMIN_PASSWORD 为空则生成随机强密码，启动日志打印一次。种子后此函数不再做事"""
-    if USERS_FILE.exists():
+    """首次启动且用户表为空时，从 .env 的 ADMIN_PASSWORD 种子 admin 账号。
+    ADMIN_PASSWORD 为空则生成随机强密码，启动日志打印一次。表非空不做任何事"""
+    rows = _db_fetchall("SELECT COUNT(*) AS n FROM users")
+    if rows and int(rows[0]["n"]) > 0:
         return
     pwd = ADMIN_PASSWORD if ADMIN_PASSWORD else secrets.token_hex(12)
-    seeded = {"done": False}
+    now = _now()
+    try:
+        _db_execute(
+            "INSERT INTO users (id, username, password_hash, role, enabled, pwd_epoch, created_at, updated_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (secrets.token_hex(4), "admin", _hash_password(pwd), "admin", 1, 0, now, now),
+        )
+    except pymysql.err.IntegrityError:
+        return  # 竞态：另一进程/线程已种子
+    if ADMIN_PASSWORD:
+        print("[seed] 已从 ADMIN_PASSWORD 创建 admin 账号（用户名: admin）", flush=True)
+    else:
+        print(f"[seed] 已创建 admin 账号，随机密码（仅此一次）：{pwd}", flush=True)
 
-    def _do(users):
-        if users:
-            return  # 竞态：文件已出现并被他人填充
-        users.append({
-            "id": secrets.token_hex(4),
-            "username": "admin",
-            "password_hash": _hash_password(pwd),
-            "role": "admin",
-            "enabled": True,
-            "pwd_epoch": 0,
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        })
-        seeded["done"] = True
 
-    _load_users_mutate(_do)
-    if seeded["done"]:
-        if ADMIN_PASSWORD:
-            print("[seed] 已从 ADMIN_PASSWORD 创建 admin 账号（用户名: admin）", flush=True)
-        else:
-            print(f"[seed] 已创建 admin 账号，随机密码（仅此一次）：{pwd}", flush=True)
+def _init_db() -> None:
+    """建表 + 种子 admin。失败则中止启动：没有 MySQL 时登录必然不可用，
+    与其带病启动（/health 报 200 但全站 401）不如直接起不来，让容器健康检查暴露问题。
+    最多等 30s，容忍 MySQL 刚起来还没开始接受连接"""
+    if not MYSQL_HOST:
+        sys.exit(
+            "[fatal] 未配置 MYSQL_HOST，无法启动\n"
+            "        用户与权限已改为存储于 MySQL，请在 .env 填写 MYSQL_HOST / MYSQL_PORT /\n"
+            "        MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE，或先启动数据库:\n"
+            "        docker compose up -d mysql"
+        )
+    last = None
+    ok = False
+    for _ in range(30):
+        try:
+            with _db_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(USERS_DDL)
+                conn.commit()
+            ok = True
+            break
+        except (DbDown, pymysql.MySQLError) as exc:
+            last = exc
+            time.sleep(1)
+    if not ok:
+        sys.exit(
+            f"[fatal] 无法连接 MySQL {MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}，启动中止\n"
+            f"        最近错误: {last}\n"
+            f"        检查 .env 的 MYSQL_* 配置，或先启动数据库: docker compose up -d mysql"
+        )
+    try:
+        _seed_admin_if_needed()
+    except DbDown as exc:
+        sys.exit(f"[fatal] 初始化用户数据失败: {exc}")
 
 
 # ── token：携带 user_id + pwd_epoch 的 HMAC，撤销靠每次查 user ──
@@ -414,7 +587,9 @@ def _make_token(user: dict) -> str:
 
 
 def _verify_token(authorization: str | None) -> dict | None:
-    """校验签名+过期，并从 users.json 重查 user（enabled / pwd_epoch）。返回 user 或 None"""
+    """校验签名+过期，再到 users 表重查用户（enabled / pwd_epoch）。返回 user 或 None。
+    数据库不通时抛 DbDown 而不是返回 None：返回 None 会被前端当成"登录过期"清掉会话，
+    而实际上只是基础设施抖动，不该逼用户重新登录"""
     if not authorization or not authorization.startswith("Bearer "):
         return None
     token = authorization[7:]
@@ -425,7 +600,7 @@ def _verify_token(authorization: str | None) -> dict | None:
         return None
     if time.time() > expires:
         return None
-    user = _find_user(_load_users(), uid=uid)
+    user = _get_user(uid=uid)
     if not user or not user.get("enabled", True):
         return None
     epoch = user.get("pwd_epoch", 0)
@@ -436,7 +611,11 @@ def _verify_token(authorization: str | None) -> dict | None:
 
 
 def _require_user(authorization: str | None) -> dict:
-    user = _verify_token(authorization)
+    """所有站点接口都过这里，DbDown → 503 也在这里统一转换"""
+    try:
+        user = _verify_token(authorization)
+    except DbDown:
+        raise HTTPException(status_code=503, detail="用户服务暂不可用，请稍后再试")
     if not user:
         raise HTTPException(status_code=401, detail="未授权，请先登录")
     return user
@@ -752,9 +931,14 @@ def _find_duplicate(sites: list, data: dict, exclude_id: str | None = None) -> s
     return ""
 
 
+# 用户名：1-32 位，允许中文/字母/数字/_ . @ -；禁空白与 HTML/属性注入相关字符
+_USERNAME_RE = r"^[A-Za-z0-9_一-鿿.@-]{1,32}$"
+
+
 class LoginIn(BaseModel):
-    username: str = Field(min_length=1, max_length=32)
-    password: str
+    username: str = Field(pattern=_USERNAME_RE)
+    # 登录侧只限长度防爆 body，不强制 72 字节（过长密码直接 401 即可）
+    password: str = Field(max_length=256)
 
 
 @app.get("/")
@@ -769,8 +953,11 @@ def admin_page():
 
 
 @app.get("/health")
+@_db_guard
 def health():
-    # 供 Docker healthcheck 探活；数据恢复时附带 warning 让运维可见
+    # 供 Docker healthcheck 探活；数据恢复时附带 warning 让运维可见。
+    # MySQL 不通时返回 503：容器被标为 unhealthy，deploy.sh 的 curl -sf 也会失败
+    _db_fetchall("SELECT 1")
     result = {"ok": True}
     if _data_warning:
         result["data_warning"] = _data_warning
@@ -783,6 +970,7 @@ _LOGIN_WINDOW_S = 15 * 60  # 15 分钟
 
 
 @app.post("/api/login")
+@_db_guard
 def login(body: LoginIn, request: Request):
     ip = request.client.host if request.client else "unknown"
     now = time.monotonic()
@@ -793,9 +981,12 @@ def login(body: LoginIn, request: Request):
     fails, first_ts = _login_attempts.get(ip, (0, now))
     if fails >= _LOGIN_MAX_FAILS:
         raise HTTPException(status_code=429, detail="尝试次数过多，请 15 分钟后再试")
-    # 用户名不存在/密码错/已禁用 都返回同一 401，防用户名枚举
-    user = _find_user(_load_users(), username=body.username)
-    if not user or not user.get("enabled", True) or not _verify_password(body.password, user.get("password_hash", "")):
+    # 用户名不存在/密码错/已禁用 都返回同一 401，防用户名枚举。
+    # 用户不存在时也跑一次 bcrypt 校验假哈希，让两种情况耗时一致（防时序枚举）。
+    # 注意：DbDown 在计数之前就抛出，基础设施故障不计入失败次数，避免短暂抖动把全员锁死。
+    user = _get_user(username=body.username)
+    cred_hash = user["password_hash"] if user else _dummy_hash()
+    if not user or not user["enabled"] or not _verify_password(body.password, cred_hash):
         _login_attempts[ip] = (fails + 1, first_ts)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     _login_attempts.pop(ip, None)  # 成功登录重置计数
@@ -1106,7 +1297,7 @@ def export_sites(format: str = "json", authorization: str | None = Header(defaul
 
 
 class UserCreateIn(BaseModel):
-    username: str = Field(min_length=1, max_length=32)
+    username: str = Field(pattern=_USERNAME_RE)
     password: str
     role: Literal["admin", "user"] = "user"
 
@@ -1133,101 +1324,98 @@ def _public_user(u: dict) -> dict:
 
 
 @app.get("/api/users")
+@_db_guard
 def list_users(authorization: str | None = Header(default=None)):
     _require_admin(authorization)
-    return [_public_user(u) for u in _load_users()]
+    rows = _db_fetchall(f"SELECT {_USER_COLS} FROM users ORDER BY created_at, username")
+    return [_public_user(_user_row(r)) for r in rows]
 
 
 @app.post("/api/users")
+@_db_guard
 def create_user(body: UserCreateIn, authorization: str | None = Header(default=None)):
     _require_admin(authorization)
     _validate_password(body.password)
     uname = body.username.strip()
-    if not uname:
-        raise HTTPException(status_code=400, detail="用户名不能为空")
-
-    def _do(users):
-        if _find_user(users, username=uname):
-            raise HTTPException(status_code=409, detail=f"用户名 {uname} 已存在")
-        users.append({
-            "id": secrets.token_hex(4),
-            "username": uname,
-            "password_hash": _hash_password(body.password),
-            "role": body.role,
-            "enabled": True,
-            "pwd_epoch": 0,
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        })
-
-    _load_users_mutate(_do)
+    now = _now()
+    # 唯一性交给数据库的 UNIQUE 约束判定，不先查再插：避免并发创建竞态
+    try:
+        _db_execute(
+            "INSERT INTO users (id, username, password_hash, role, enabled, pwd_epoch, created_at, updated_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (secrets.token_hex(4), uname, _hash_password(body.password), body.role, 1, 0, now, now),
+        )
+    except pymysql.err.IntegrityError:
+        raise HTTPException(status_code=409, detail=f"用户名 {uname} 已存在")
     return {"ok": True}
 
 
 @app.put("/api/users/{user_id}")
+@_db_guard
 def update_user(user_id: str, body: UserUpdateIn, authorization: str | None = Header(default=None)):
     _require_admin(authorization)
-    result: dict = {}
-
-    def _do(users):
-        u = _find_user(users, uid=user_id)
-        if not u:
+    if body.enabled is None and body.role is None:
+        raise HTTPException(status_code=400, detail="无可更新字段")
+    now = _now()
+    # 事务 + FOR UPDATE：读到的 role 到提交前不会被并发修改，"最后一个 admin" 检查才成立
+    with _db_tx() as cur:
+        cur.execute(f"SELECT {_USER_COLS} FROM users WHERE id = %s FOR UPDATE", (user_id,))
+        row = cur.fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="用户不存在")
-        if body.enabled is not None:
-            u["enabled"] = body.enabled
-        if body.role is not None and body.role != u.get("role"):
+        user = _user_row(row)
+        if body.enabled is not None and body.enabled != user["enabled"]:
+            cur.execute("UPDATE users SET enabled = %s, updated_at = %s WHERE id = %s",
+                        (1 if body.enabled else 0, now, user_id))
+        if body.role is not None and body.role != user["role"]:
             # 不允许把最后一个 admin 降级
             if body.role != "admin":
-                others = [x for x in users if x.get("role") == "admin" and x["id"] != user_id]
-                if not others:
+                cur.execute("SELECT COUNT(*) AS n FROM users WHERE role = %s AND id <> %s", ("admin", user_id))
+                if not cur.fetchone()["n"]:
                     raise HTTPException(status_code=400, detail="至少保留一个管理员")
-            u["role"] = body.role
-        u["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        result["user"] = _public_user(u)
-
-    _load_users_mutate(_do)
-    return result["user"]
+            cur.execute("UPDATE users SET role = %s, updated_at = %s WHERE id = %s", (body.role, now, user_id))
+        cur.execute("UPDATE users SET updated_at = %s WHERE id = %s", (now, user_id))
+        cur.execute(f"SELECT {_USER_COLS} FROM users WHERE id = %s", (user_id,))
+        result = _public_user(_user_row(cur.fetchone()))
+    return result
 
 
 @app.post("/api/users/{user_id}/password")
+@_db_guard
 def reset_password(user_id: str, body: PasswordResetIn, authorization: str | None = Header(default=None)):
     _require_admin(authorization)
     _validate_password(body.password)
-
-    def _do(users):
-        u = _find_user(users, uid=user_id)
-        if not u:
-            raise HTTPException(status_code=404, detail="用户不存在")
-        u["password_hash"] = _hash_password(body.password)
-        u["pwd_epoch"] = u.get("pwd_epoch", 0) + 1  # 旧 token 立即失效
-        u["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-
-    _load_users_mutate(_do)
+    # pwd_epoch 在 SQL 里自增：单条语句即原子，旧 token 立即失效，无读改写竞态
+    n = _db_execute(
+        "UPDATE users SET password_hash = %s, pwd_epoch = pwd_epoch + 1, updated_at = %s WHERE id = %s",
+        (_hash_password(body.password), _now(), user_id),
+    )
+    if n == 0:
+        raise HTTPException(status_code=404, detail="用户不存在")
     return {"ok": True}
 
 
 @app.delete("/api/users/{user_id}")
+@_db_guard
 def delete_user(user_id: str, authorization: str | None = Header(default=None)):
     admin = _require_admin(authorization)
     if admin["id"] == user_id:
         raise HTTPException(status_code=400, detail="不能删除自己")
-
-    def _do(users):
-        u = _find_user(users, uid=user_id)
-        if not u:
+    with _db_tx() as cur:
+        cur.execute("SELECT role FROM users WHERE id = %s FOR UPDATE", (user_id,))
+        row = cur.fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="用户不存在")
-        if u.get("role") == "admin":
-            others = [x for x in users if x.get("role") == "admin" and x["id"] != user_id]
-            if not others:
+        if row["role"] == "admin":
+            cur.execute("SELECT COUNT(*) AS n FROM users WHERE role = %s AND id <> %s", ("admin", user_id))
+            if not cur.fetchone()["n"]:
                 raise HTTPException(status_code=400, detail="至少保留一个管理员")
-        users.remove(u)
-
-    _load_users_mutate(_do)
+        cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
     return {"ok": True}
 
 
-# 启动时种子 admin（首次启动且 users.json 不存在）
-_seed_admin_if_needed()
+# 启动时连库、建表、种子 admin（表为空时）
+_init_db()
 
 
 if __name__ == "__main__":

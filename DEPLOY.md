@@ -54,6 +54,8 @@ PORT=8080
 
    不迁 `.env` 会在新目录重新生成一个随机密码，旧密码就孤立在旧目录了。
 
+   MySQL 数据在命名卷 `mysql_data`，不跟目录走但**也不用迁**：两个目录名都叫 `sites-nav`，compose 算出的项目名相同，新目录会直接连上同一个卷，用户数据原地可用。
+
 `/root` 作为服务目录不理想（占 root 家目录、分区常较小、不便于备份脚本按路径匹配），`/opt` 或 `/data` 更常规。
 
 ## 服务器前提
@@ -68,6 +70,8 @@ PORT=8080
 
 1. **脚本执行位**：从 Windows 提交的 `.sh` mode 是 `100644`，脚本内 `chmod +x *.sh` 补上
 2. **`data/` 目录归属**：容器 `read_only` + 非 root，唯一可写位置是 `./data`。脚本从镜像解析运行用户 UID 后 `chown`，避免"页面能看、一点新增就 500"的 PermissionError
+
+3. **MySQL 密码**：`MYSQL_HOST` 指向 compose 内置的 `mysql` 服务时，`MYSQL_PASSWORD` 和 `MYSQL_ROOT_PASSWORD` 缺失会用 `openssl rand -hex 24` 生成并写入 `.env`；指向外部实例时**不会代填**（代填会让应用拿随机密码去连你的库）
 
 `.env` 缺失或 `ADMIN_PASSWORD` 为空/占位符时，脚本用 `openssl rand -hex 24` 生成强密码，并在终端打印**一次**。
 
@@ -88,11 +92,27 @@ docker compose up -d
 
 ## 备份
 
-单文件存储，备份就是复制文件：
+数据分两处：站点数据是单文件，用户与权限在 MySQL。
+
+```bash
+# 站点数据：复制文件即可
+tar czf /backup/sites-nav-sites-$(date +\%F).tgz -C /opt/sites-nav data
+
+# 用户与权限：mysqldump
+cd /opt/sites-nav && docker compose exec -T mysql sh -c \
+  'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines sites_nav' \
+  > /backup/sites-nav-users-$(date +\%F).sql
+```
+
+cron 合起来一条：
 
 ```
-15 3 * * * tar czf /backup/sites-nav-$(date +\%F).tgz -C /opt/sites-nav data && find /backup -name 'sites-nav-*.tgz' -mtime +30 -delete
+15 3 * * * cd /opt/sites-nav && tar czf /backup/sites-nav-sites-$(date +\%F).tgz data && docker compose exec -T mysql sh -c 'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines sites_nav' > /backup/sites-nav-users-$(date +\%F).sql && find /backup -name 'sites-nav-*' -mtime +30 -delete
 ```
+
+- MySQL 数据在命名卷 `mysql_data`，`docker compose down`（不带 `-v`）不会删它；要彻底清库才需要 `docker volume rm`
+- 应用启动会自动建表（`CREATE TABLE IF NOT EXISTS`），空库也能直接起
+- 站点数据损坏时自动回退 `sites.json.bak`（保留 3 份轮转），恢复结果会在 `/health` 的 `data_warning` 字段里提示
 
 ## 反向代理 + HTTPS
 
@@ -137,11 +157,16 @@ server {
 | 看不到「加入监控/编辑/删除」按钮 | 没登录 | 访问 `/admin` 登录（首页故意不显示登录入口） |
 | 改了 app.py 不生效 | 没开 reload 或缓存 | 容器重建即 `docker compose up -d --build`；本地开发用 `python run.py`（带 `--reload`） |
 | token 频繁失效 | 重启/重载轮换了 `TOKEN_SECRET` | 正常现象（安全设计），重启后去 `/admin` 重新登录 |
+| 全站 503「用户服务暂不可用」 | MySQL 连不上 | `docker compose ps` 看 mysql 是否 healthy，`docker compose logs mysql` 查原因。**恢复后应用自动可用，不用重启**，已登录用户的会话也不丢 |
+| 应用起不来：无法连接 MySQL | `.env` 的 `MYSQL_*` 填错，或 mysql 服务没起 | `docker compose up -d mysql`；核对 `MYSQL_HOST`（走内置服务填 `mysql`）/ `MYSQL_PASSWORD` |
+| 应用起不来：MYSQL_ROOT_PASSWORD 未设置 | compose 的 `:?` 守卫拦下 | `bash deploy.sh` 或 `bootstrap.sh` 会自动生成并写进 `.env` |
+| 登录 429 尝试次数过多 | 同一 IP 15 分钟内失败 10 次 | 等 15 分钟；反向代理后记得配 `X-Forwarded-For`，否则全公司共享一个计数 |
 
 ## 本地开发（非 Docker）
 
 ```bash
 pip install -r requirements.txt
+docker compose up -d mysql        # 起一个 MySQL 给应用连（或把 .env 的 MYSQL_* 指向已有实例）
 python run.py          # 带 --reload，改 app.py 自动重载
 ```
 

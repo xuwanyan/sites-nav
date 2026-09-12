@@ -66,50 +66,93 @@ setup_env() {
     mkdir -p "$DATA_DIR"
 }
 
-# ── 设置管理密码 ──
+# ── 设置管理员初始密码 ──
+# ADMIN_PASSWORD 只用于首次启动种子 admin 账号；表已有用户后就不再被读取，
+# 所以"留空"不再是只读模式，而是首次启动时生成随机密码并在日志打印一次。
 setup_password() {
     local interactive="${1:-1}"
-    if grep -q '^ADMIN_PASSWORD=' "$ENV_FILE" 2>/dev/null; then
-        local existing
-        existing=$(grep '^ADMIN_PASSWORD=' "$ENV_FILE" | head -1 | cut -d= -f2-)
-        if _is_placeholder "$existing"; then
-            echo "⚠️  .env 中 ADMIN_PASSWORD 为空或占位符"
-            if [ "$interactive" = "0" ]; then
-                echo "   非交互模式，将以只读模式启动"
-                return
-            fi
-            echo -n "   请输入管理密码（留空 = 只读模式）： "
-            read -rsp "" ADMIN_PASSWORD
-            echo ""
-            if [ -n "$ADMIN_PASSWORD" ]; then
-                local tmp
-                tmp=$(mktemp "$ENV_FILE.XXXXXX")
-                awk -v p="$ADMIN_PASSWORD" -F= '
-                    $1=="ADMIN_PASSWORD" { print "ADMIN_PASSWORD=" p; next }
-                    { print }
-                ' "$ENV_FILE" > "$tmp"
-                mv "$tmp" "$ENV_FILE"
-                chmod 600 "$ENV_FILE"
-                echo "✅ 密码已写入"
-            else
-                echo "ℹ️  未设置密码，只读模式"
-            fi
-        else
-            echo "✅ 已有管理密码"
-        fi
+    local existing
+    existing=$(grep '^ADMIN_PASSWORD=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+    if ! _is_placeholder "$existing"; then
+        echo "✅ 已有管理员初始密码"
+        return
+    fi
+    if [ "$interactive" = "0" ]; then
+        echo "ℹ️  未设置管理员初始密码，首次启动会生成随机密码并打印一次（docker compose logs 查看）"
+        return
+    fi
+    echo -n "   请输入管理员初始密码（首次启动创建 admin 账号，之后可在后台改）： "
+    read -rsp "" ADMIN_PASSWORD
+    echo ""
+    if [ -z "$ADMIN_PASSWORD" ]; then
+        echo "ℹ️  留空，首次启动会生成随机密码"
+        return
+    fi
+    if grep -q '^ADMIN_PASSWORD=' "$ENV_FILE"; then
+        local tmp
+        tmp=$(mktemp "$ENV_FILE.XXXXXX")
+        awk -v p="$ADMIN_PASSWORD" -F= '
+            $1=="ADMIN_PASSWORD" { print "ADMIN_PASSWORD=" p; next }
+            { print }
+        ' "$ENV_FILE" > "$tmp"
+        mv "$tmp" "$ENV_FILE"
     else
-        if [ "$interactive" = "0" ]; then
-            echo "ℹ️  未设置密码，只读模式"
-            return
+        echo "ADMIN_PASSWORD=$ADMIN_PASSWORD" >> "$ENV_FILE"
+    fi
+    chmod 600 "$ENV_FILE"
+    echo "✅ 密码已写入"
+}
+
+# ── 设置 MySQL 密码 ──
+# 仅当 MYSQL_HOST 指向 compose 内置的 mysql 服务时才自动生成；
+# 指向已有实例时绝不能代填，否则应用会拿随机密码连别人的库。
+setup_mysql_password() {
+    local host_val
+    host_val=$(grep -E '^MYSQL_HOST=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+    host_val="${host_val:-mysql}"
+    if [ "$host_val" != "mysql" ]; then
+        echo "ℹ️  MYSQL_HOST=$host_val 指向外部数据库，请自行填写 MYSQL_USER / MYSQL_PASSWORD"
+        return
+    fi
+    local existing
+    existing=$(grep '^MYSQL_PASSWORD=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+    if [ -n "$existing" ]; then
+        echo "✅ 已有 MySQL 密码"
+    else
+        local p
+        p=$(openssl rand -hex 24)
+        if grep -q '^MYSQL_PASSWORD=' "$ENV_FILE"; then
+            local tmp
+            tmp=$(mktemp "$ENV_FILE.XXXXXX")
+            awk -v p="$p" -F= '
+                $1=="MYSQL_PASSWORD" { print "MYSQL_PASSWORD=" p; next }
+                { print }
+            ' "$ENV_FILE" > "$tmp"
+            mv "$tmp" "$ENV_FILE"
+        else
+            echo "MYSQL_PASSWORD=$p" >> "$ENV_FILE"
         fi
-        echo -n "请输入管理密码（留空 = 只读模式）： "
-        read -rsp "" ADMIN_PASSWORD
-        echo ""
-        if [ -n "$ADMIN_PASSWORD" ]; then
-            echo "ADMIN_PASSWORD=$ADMIN_PASSWORD" >> "$ENV_FILE"
-            chmod 600 "$ENV_FILE"
-            echo "✅ 密码已写入"
+        chmod 600 "$ENV_FILE"
+        echo "✅ MySQL 密码已生成并写入 $ENV_FILE"
+    fi
+    # MYSQL_ROOT_PASSWORD 只在数据卷首次初始化时生效，缺失时 compose 的 :? 会直接报错
+    local root_existing
+    root_existing=$(grep '^MYSQL_ROOT_PASSWORD=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+    if [ -z "$root_existing" ]; then
+        local r tmp
+        r=$(openssl rand -hex 24)
+        if grep -q '^MYSQL_ROOT_PASSWORD=' "$ENV_FILE"; then
+            tmp=$(mktemp "$ENV_FILE.XXXXXX")
+            awk -v p="$r" -F= '
+                $1=="MYSQL_ROOT_PASSWORD" { print "MYSQL_ROOT_PASSWORD=" p; next }
+                { print }
+            ' "$ENV_FILE" > "$tmp"
+            mv "$tmp" "$ENV_FILE"
+        else
+            echo "MYSQL_ROOT_PASSWORD=$r" >> "$ENV_FILE"
         fi
+        chmod 600 "$ENV_FILE"
+        echo "ℹ️  MYSQL_ROOT_PASSWORD 已生成（仅数据卷首次初始化生效）"
     fi
 }
 
@@ -211,6 +254,7 @@ case "$MODE" in
     --deploy)
         setup_env
         setup_password 0
+        setup_mysql_password
         check_port
         do_deploy
         ;;
@@ -218,6 +262,7 @@ case "$MODE" in
         # 默认：交互式部署
         setup_env
         setup_password 1
+        setup_mysql_password
         check_port
         do_deploy
         ;;

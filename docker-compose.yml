@@ -1,4 +1,31 @@
 services:
+  mysql:
+    # 用户与权限存储。站点数据仍在 ./data（容器只读挂载），两者互不影响。
+    # 已有自己的 MySQL 时删掉本服务，把 .env 的 MYSQL_* 指向已有实例即可。
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      # 这两个只在数据卷首次初始化时生效，之后改 .env 不会改已创建的账号
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 设置 MYSQL_ROOT_PASSWORD（bootstrap 会自动生成）}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 设置 MYSQL_PASSWORD（bootstrap 会自动生成）}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-sites_nav}
+      MYSQL_USER: ${MYSQL_USER:-sites_nav}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    volumes:
+      - mysql_data:/var/lib/mysql
+    # 故意不发布端口到宿主机：只让 sites-nav 通过 compose 内部网络访问。
+    # 确需外部工具连库时再加 ports: - "127.0.0.1:3306:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 15s
+
   sites-nav:
     build: .
     image: sites-nav:latest
@@ -8,8 +35,11 @@ services:
       - "${PORT:-8000}:8000"
     # 从 .env 读取所有变量（含未来新增的），避免硬编码白名单漏掉新变量
     env_file: .env
+    depends_on:
+      mysql:
+        condition: service_healthy
     volumes:
-      - ./data:/app/data          # 数据持久化，备份即复制 ./data/sites.json
+      - ./data:/app/data          # 站点数据持久化，备份即复制 ./data/sites.json
     restart: unless-stopped
     # ── 容器加固 ──
     read_only: true               # 文件系统只读，只有 ./data 可写
@@ -21,8 +51,12 @@ services:
       - no-new-privileges:true
     pids_limit: 256
     healthcheck:
+      # /health 会查 MySQL，数据库不通时返回 503 → 容器标为 unhealthy
       test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health', timeout=5); sys.exit(0)"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  mysql_data:
