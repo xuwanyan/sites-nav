@@ -471,6 +471,7 @@
     <button id="addBtn" class="btn btn-primary" style="display:none;" onclick="openSiteModal()">+ 新增网站</button>
     <button id="importBtn" class="btn btn-default" style="display:none;" onclick="openImportModal()">批量导入</button>
     <button id="exportBtn" class="btn btn-default" style="display:none;" onclick="openExportModal()">导出</button>
+    <button id="usersBtn" class="btn btn-default" style="display:none;" onclick="openUsersModal()">👤 用户管理</button>
     <button id="logoutBtn" class="btn btn-default" style="display:none;" onclick="logout()">退出登录</button>
   </div>
 </div>
@@ -701,6 +702,40 @@
   </div>
 </div>
 
+<!-- 用户管理弹窗（仅 admin）-->
+<div class="modal-overlay" id="usersModal">
+  <div class="modal" style="max-width:680px;">
+    <div class="modal-header">
+      <h3>👤 用户管理</h3>
+      <button class="modal-close" onclick="closeUsersModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="usersList" style="margin-bottom:14px;"></div>
+      <details style="border-top:1px solid #f0f0f0; padding-top:14px;">
+        <summary style="cursor:pointer; font-weight:500; font-size:13px; color:#1677ff;">＋ 新建用户</summary>
+        <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; align-items:flex-end;">
+          <div style="flex:1; min-width:120px;">
+            <label style="font-size:12px; color:#8c8c8c;">用户名</label>
+            <input type="text" id="newUsername" placeholder="如 zhangsan" style="width:100%; padding:6px 8px; border:1px solid #d9d9d9; border-radius:4px; box-sizing:border-box;">
+          </div>
+          <div style="flex:1.4; min-width:160px;">
+            <label style="font-size:12px; color:#8c8c8c;">密码（≥10位 含字母+数字）</label>
+            <input type="password" id="newPassword" placeholder="初始密码" style="width:100%; padding:6px 8px; border:1px solid #d9d9d9; border-radius:4px; box-sizing:border-box;">
+          </div>
+          <div>
+            <label style="font-size:12px; color:#8c8c8c;">角色</label>
+            <select id="newRole" style="padding:6px 8px; border:1px solid #d9d9d9; border-radius:4px;">
+              <option value="user">普通用户</option>
+              <option value="admin">管理员</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" onclick="createUser()" style="padding:7px 16px;">创建</button>
+        </div>
+      </details>
+    </div>
+  </div>
+</div>
+
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
@@ -710,6 +745,8 @@ let sites = [];
 let activeCategory = "全部";
 let activeEnv = "全部";
 let token = sessionStorage.getItem("nav_token") || "";
+let role = sessionStorage.getItem("nav_role") || "user";
+const isAdmin = () => token && role === "admin";
 let deleteTargetId = null;
 let deleteTargetEnv = null;
 // 全局忙碌标志：防双击提交（同一时刻只允许一个异步操作）
@@ -766,18 +803,27 @@ syncHeadH();
 window.addEventListener("resize", syncHeadH);
 
 // ==================== 初始化 ====================
-updateAdminUI();
-syncGroupToggle();
-loadSites();
+if (!token) {
+  // 普通用户也要登录才能看，未登录直接去登录页
+  location.href = "/admin";
+} else {
+  updateAdminUI();
+  syncGroupToggle();
+  loadSites();
+}
 
 // ==================== API 请求 ====================
 async function api(url, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (token) headers["Authorization"] = "Bearer " + token;
   const res = await fetch(url, { ...options, headers });
-  if (res.status === 401 && token) {
-    logout(false);
+  if (res.status === 401) {
+    // token 过期 / 被禁用 / 被改密 → 清状态回登录页
+    token = ""; role = "user";
+    sessionStorage.removeItem("nav_token");
+    sessionStorage.removeItem("nav_role");
     showToast("登录已过期，请重新登录", "error");
+    setTimeout(() => { location.href = "/admin"; }, 800);
     throw new Error("未授权");
   }
   const data = await res.json().catch(() => ({}));
@@ -959,7 +1005,7 @@ function siteCard(s) {
           <span class="kind-tag" style="background:${meta.color}" title="${escapeAttr(s.kind || "网站")}">${meta.icon} ${escapeHtml(s.kind || "网站")}</span>
           ${s.monitor ? `<span class="env-tag env-probe" title="${escapeAttr(probeTitle(s))}" id="probe-${escapeAttr(s.id)}">已监控</span>` : `<span class="env-tag env-off">未加入监控</span>`}
           ${s.env ? `<span class="env-tag ${envClass}">${escapeHtml(s.env)}</span>` : ""}
-          ${token ? `<span class="card-actions">
+          ${isAdmin() ? `<span class="card-actions">
             ${monitorBtn(s)}
             <button class="btn btn-default btn-sm" onclick="openEditSite('${escapeAttr(s.id)}')">✏️ 编辑</button>
             <button class="btn btn-danger btn-sm" onclick="openDeleteModal('${escapeAttr(s.id)}', '${escapeAttr(s.name)}', ${s.env ? `'${escapeAttr(s.env)}'` : "null"})">🗑️ 删除</button>
@@ -1048,9 +1094,9 @@ function envCol(env, entrySites) {
       <span class="env-col-label ${isProd ? "prod" : "test"}">${label}</span>
       <span style="display:flex; align-items:center; gap:10px;">
         ${entrySites.filter(s => s.monitor).map(s => `<span class="env-tag env-probe" id="probe-${escapeAttr(s.id)}" title="${escapeAttr(probeTitle(s))}" style="font-size:11px">📡 已监控</span>`).join("")}
-        ${token ? entrySites.map(s => monitorBtn(s)).join("") : ""}
-        ${token ? entrySites.map(s => `<button class="btn btn-default btn-sm" onclick="openEditSite('${escapeAttr(s.id)}')">✏️ 编辑</button>`).join("") : ""}
-        ${token ? entrySites.map(s => `<button class="btn btn-danger btn-sm" onclick="openDeleteModal('${escapeAttr(s.id)}','${escapeAttr(s.name)}','${escapeAttr(env)}')">🗑️ 删除</button>`).join("") : ""}
+        ${isAdmin() ? entrySites.map(s => monitorBtn(s)).join("") : ""}
+        ${isAdmin() ? entrySites.map(s => `<button class="btn btn-default btn-sm" onclick="openEditSite('${escapeAttr(s.id)}')">✏️ 编辑</button>`).join("") : ""}
+        ${isAdmin() ? entrySites.map(s => `<button class="btn btn-danger btn-sm" onclick="openDeleteModal('${escapeAttr(s.id)}','${escapeAttr(s.name)}','${escapeAttr(env)}')">🗑️ 删除</button>`).join("") : ""}
       </span>
     </div>
     ${body}
@@ -1158,19 +1204,25 @@ function copyText(text, btn) {
 // 此处仅保留退出登录：token 由 /admin 登录后写入 sessionStorage
 
 function logout(notify = true) {
-  token = "";
+  token = ""; role = "user";
   sessionStorage.removeItem("nav_token");
-  updateAdminUI();
-  renderSites();
-  if (notify) showToast("已退出运维模式", "success");
+  sessionStorage.removeItem("nav_role");
+  if (notify) {
+    showToast("已退出登录", "success");
+    setTimeout(() => { location.href = "/admin"; }, 400);
+  } else {
+    location.href = "/admin";
+  }
 }
 
 function updateAdminUI() {
+  const admin = isAdmin();
   $("logoutBtn").style.display = token ? "" : "none";
-  $("addBtn").style.display = token ? "" : "none";
-  $("importBtn").style.display = token ? "" : "none";
-  $("exportBtn").style.display = token ? "" : "none";
-  $("adminBadge").style.display = token ? "" : "none";
+  $("addBtn").style.display = admin ? "" : "none";
+  $("importBtn").style.display = admin ? "" : "none";
+  $("exportBtn").style.display = admin ? "" : "none";
+  $("adminBadge").style.display = admin ? "" : "none";
+  $("usersBtn").style.display = admin ? "" : "none";
 }
 
 // ==================== 批量导入 / 导出 ====================
@@ -1602,6 +1654,75 @@ function showToast(msg, type = "success") {
 }
 
 // 点击遮罩/ESC 关闭模态框
+// ==================== 用户管理（仅 admin）====================
+async function openUsersModal() {
+  $("usersModal").classList.add("show");
+  await renderUsers();
+}
+function closeUsersModal() { $("usersModal").classList.remove("show"); }
+
+async function renderUsers() {
+  const list = $("usersList");
+  try {
+    const users = await api("/api/users");
+    if (!users.length) { list.innerHTML = `<div style="color:#8c8c8c; padding:8px;">暂无用户</div>`; return; }
+    list.innerHTML = users.map(u => `
+      <div style="display:flex; align-items:center; gap:8px; padding:8px 4px; border-bottom:1px solid #f0f0f0; flex-wrap:wrap;">
+        <span style="font-weight:600; min-width:90px;">${escapeHtml(u.username)}</span>
+        <span class="env-tag ${u.role === "admin" ? "env-prod" : "env-test"}">${u.role === "admin" ? "管理员" : "普通用户"}</span>
+        <span class="env-tag ${u.enabled ? "env-probe" : "env-off"}">${u.enabled ? "启用" : "已禁用"}</span>
+        <span style="flex:1"></span>
+        <button class="btn btn-default btn-sm" onclick="toggleUser('${u.id}', ${!u.enabled})">${u.enabled ? "禁用" : "启用"}</button>
+        <button class="btn btn-default btn-sm" onclick="resetUserPassword('${u.id}','${escapeAttr(u.username)}')">改密码</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteUser('${u.id}','${escapeAttr(u.username)}')">删除</button>
+      </div>
+    `).join("");
+  } catch (e) {
+    list.innerHTML = `<div style="color:#ff4d4f; padding:8px;">加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function createUser() {
+  const username = $("newUsername").value.trim();
+  const password = $("newPassword").value;
+  const role = $("newRole").value;
+  if (!username) { showToast("请输入用户名", "error"); return; }
+  if (!password) { showToast("请输入密码", "error"); return; }
+  try {
+    await api("/api/users", { method: "POST", body: JSON.stringify({ username, password, role }) });
+    showToast("用户已创建", "success");
+    $("newUsername").value = ""; $("newPassword").value = "";
+    await renderUsers();
+  } catch (e) { showToast("创建失败: " + e.message, "error"); }
+}
+
+async function toggleUser(id, enable) {
+  try {
+    await api(`/api/users/${id}`, { method: "PUT", body: JSON.stringify({ enabled: enable }) });
+    await renderUsers();
+    showToast(enable ? "已启用" : "已禁用（该用户会话立即失效）", "success");
+  } catch (e) { showToast(e.message, "error"); }
+}
+
+async function resetUserPassword(id, username) {
+  const pw = prompt(`为「${username}」设置新密码\n（≥10 位，含字母+数字）`);
+  if (pw === null) return;
+  if (!pw) { showToast("密码不能为空", "error"); return; }
+  try {
+    await api(`/api/users/${id}/password`, { method: "POST", body: JSON.stringify({ password: pw }) });
+    showToast("密码已重置（该用户旧会话立即失效）", "success");
+  } catch (e) { showToast("重置失败: " + e.message, "error"); }
+}
+
+async function deleteUser(id, username) {
+  if (!confirm(`确定删除用户「${username}」？`)) return;
+  try {
+    await api(`/api/users/${id}`, { method: "DELETE" });
+    await renderUsers();
+    showToast("已删除", "success");
+  } catch (e) { showToast(e.message, "error"); }
+}
+
 document.querySelectorAll(".modal-overlay").forEach(m => {
   m.addEventListener("click", e => { if (e.target === m) m.classList.remove("show"); });
 });

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>运维登录 · 公司常用网站导航</title>
+<title>登录 · 公司常用网站导航</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -84,21 +84,25 @@
 <body>
 
 <div class="login-card">
-  <h1>🏢 运维登录</h1>
-  <div class="sub">公司常用网站导航 · 管理入口</div>
+  <h1>🏢 登录</h1>
+  <div class="sub">公司常用网站导航</div>
 
   <!-- 已登录态 -->
   <div id="loggedInBox" style="display:none;">
-    <div class="ok-box">✅ 当前已处于运维模式</div>
-    <button class="btn btn-primary" onclick="location.href='/'">返回首页管理</button>
+    <div class="ok-box">✅ 当前已登录</div>
+    <button class="btn btn-primary" onclick="location.href='/'">返回首页</button>
     <button class="btn btn-danger" onclick="doLogout()">退出登录</button>
   </div>
 
   <!-- 未登录态 -->
   <div id="loginForm">
     <div class="form-group">
-      <label>运维口令</label>
-      <input type="password" id="password" placeholder="请输入运维口令" onkeydown="if(event.key==='Enter')doLogin()">
+      <label>用户名</label>
+      <input type="text" id="username" placeholder="请输入用户名" onkeydown="if(event.key==='Enter')$('password').focus()">
+    </div>
+    <div class="form-group">
+      <label>密码</label>
+      <input type="password" id="password" placeholder="请输入密码" onkeydown="if(event.key==='Enter')doLogin()">
     </div>
     <button class="btn btn-primary" onclick="doLogin()">登录</button>
   </div>
@@ -122,21 +126,24 @@ if (token) {
   $("loggedInBox").style.display = "";
   $("loginForm").style.display = "none";
 } else {
-  setTimeout(() => $("password").focus(), 100);
+  setTimeout(() => $("username").focus(), 100);
 }
 
 async function doLogin() {
+  const username = $("username").value.trim();
   const password = $("password").value;
-  if (!password) { showToast("请输入运维口令", "error"); return; }
+  if (!username) { showToast("请输入用户名", "error"); return; }
+  if (!password) { showToast("请输入密码", "error"); return; }
   try {
     const res = await fetch("/api/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || "登录失败");
     sessionStorage.setItem("nav_token", data.token);
+    sessionStorage.setItem("nav_role", data.role || "user");
     showToast("登录成功，正在进入首页…", "success");
     setTimeout(() => { location.href = "/"; }, 600);
   } catch (e) {
@@ -146,7 +153,8 @@ async function doLogin() {
 
 function doLogout() {
   sessionStorage.removeItem("nav_token");
-  showToast("已退出运维模式", "success");
+  sessionStorage.removeItem("nav_role");
+  showToast("已退出登录", "success");
   setTimeout(() => { location.href = "/"; }, 600);
 }
 </script>

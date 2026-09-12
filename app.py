@@ -44,14 +44,19 @@ def _load_env_file(path: Path) -> None:
 
 _load_env_file(BASE_DIR / ".env")
 
-# 不设默认值；未配置 ADMIN_PASSWORD 时写操作自动禁用（只读模式），见 _require_admin
+# 管理密码：仅用于首次启动种子 admin 账号（向后兼容旧的单密码部署）。
+# 种子后 users.json 是唯一真相源，此变量不再被读取。
 # 已知占位符视为未配置，防止 .env.example / Docker 路径下的默认密码成为可用凭证
 _PLACEHOLDER_PASSWORDS = {"", "PleaseChangeMe", "changeme", "change_me", "password", "123456", "admin", "admin123"}
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 if ADMIN_PASSWORD and ADMIN_PASSWORD.strip().lower() in _PLACEHOLDER_PASSWORDS:
     ADMIN_PASSWORD = ""
+
+# token 签名密钥：进程内随机，重启即轮换（所有已发 token 失效，安全特性）。
+# 多实例不共享 —— 单实例部署是硬约束（见 DEPLOY.md）
 TOKEN_SECRET = secrets.token_hex(32)
-TOKEN_TTL = 12 * 3600
+# 会话有效期：.env 的 TOKEN_TTL_HOURS，默认 12 小时；非法值回退 12h
+TOKEN_TTL = int(os.environ.get("TOKEN_TTL_HOURS", "12") or "12") * 3600
 
 # 拨测联动（categraf-http-admin）：不配置 CATEGRAF_ADMIN_URL 时功能整体关闭
 CATEGRAF_ADMIN_URL = os.environ.get("CATEGRAF_ADMIN_URL", "").rstrip("/")
@@ -63,6 +68,10 @@ _sync_status: dict = {}
 
 # 数据文件读写锁：防止并发请求读改写丢数据（RLock 允许 _load 内部调用 _save）
 _file_lock = threading.RLock()
+
+# 用户数据文件（多用户认证）。与 sites.json 同目录，备份策略一致
+USERS_FILE = DATA_DIR / "users.json"
+_users_lock = threading.RLock()
 
 app = FastAPI(title="内部系统导航")
 
@@ -271,33 +280,173 @@ def _load_mutate(fn) -> list:
         return sites
 
 
-def _make_token() -> str:
+# ── 用户存储（data/users.json，照搬 sites.json 的原子写+锁模式）──
+
+
+def _load_users() -> list:
+    """读取全部用户。文件不存在/损坏返回 []（不做备份恢复——用户少且敏感，损坏应人工介入）"""
+    with _users_lock:
+        if not USERS_FILE.exists():
+            return []
+        try:
+            raw = json.loads(USERS_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+        if not isinstance(raw, list):
+            return []
+        return [u for u in raw if isinstance(u, dict) and u.get("username")]
+
+
+def _save_users_unlocked(users: list) -> None:
+    """无锁写入：调用方必须已持有 _users_lock。单份 .bak + tmp+os.replace 原子写"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if USERS_FILE.exists():
+        try:
+            USERS_FILE.with_suffix(".bak").write_bytes(USERS_FILE.read_bytes())
+        except OSError:
+            pass
+    tmp = USERS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(users, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, USERS_FILE)
+
+
+def _load_users_mutate(fn) -> list:
+    """原子读-改-写：fn(users) 原地修改。fn 抛 HTTPException 时不写入"""
+    with _users_lock:
+        users = _load_users()
+        fn(users)
+        _save_users_unlocked(users)
+        return users
+
+
+def _find_user(users: list, *, uid: str | None = None, username: str | None = None) -> dict | None:
+    """按 id 或 username（大小写不敏感）查用户"""
+    for u in users:
+        if uid and u.get("id") == uid:
+            return u
+        if username and u.get("username", "").lower() == username.lower():
+            return u
+    return None
+
+
+# ── 密码哈希：优先 bcrypt，未装则退 pbkdf2_hmac（标准库，零依赖）──
+
+try:
+    import bcrypt as _bcrypt
+
+    def _hash_password(pw: str) -> str:
+        return _bcrypt.hashpw(pw.encode("utf-8"), _bcrypt.gensalt()).decode("ascii")
+
+    def _verify_password(pw: str, hash_str: str) -> bool:
+        try:
+            return _bcrypt.checkpw(pw.encode("utf-8"), hash_str.encode("ascii"))
+        except (ValueError, TypeError):
+            return False
+
+    _PWD_ALGO = "bcrypt"
+except ImportError:
+    def _hash_password(pw: str) -> str:
+        salt = secrets.token_hex(16)
+        h = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), salt.encode("ascii"), 200_000)
+        return f"pbkdf2${salt}${h.hex()}"
+
+    def _verify_password(pw: str, hash_str: str) -> bool:
+        try:
+            algo, salt, h = hash_str.split("$", 2)
+        except ValueError:
+            return False
+        if algo != "pbkdf2":
+            return False
+        calc = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), salt.encode("ascii"), 200_000)
+        return hmac.compare_digest(calc.hex(), h)
+
+    _PWD_ALGO = "pbkdf2"
+
+
+def _validate_password(pw: str) -> None:
+    """强密码校验：≥10 位，含字母+数字。不通过抛 400"""
+    if len(pw) < 10:
+        raise HTTPException(status_code=400, detail="密码至少 10 位")
+    if not any(c.isalpha() for c in pw) or not any(c.isdigit() for c in pw):
+        raise HTTPException(status_code=400, detail="密码必须同时包含字母和数字")
+
+
+def _seed_admin_if_needed() -> None:
+    """首次启动且无用户时，从 .env 的 ADMIN_PASSWORD 种子 admin 账号。
+    ADMIN_PASSWORD 为空则生成随机强密码，启动日志打印一次。种子后此函数不再做事"""
+    if USERS_FILE.exists():
+        return
+    pwd = ADMIN_PASSWORD if ADMIN_PASSWORD else secrets.token_hex(12)
+    seeded = {"done": False}
+
+    def _do(users):
+        if users:
+            return  # 竞态：文件已出现并被他人填充
+        users.append({
+            "id": secrets.token_hex(4),
+            "username": "admin",
+            "password_hash": _hash_password(pwd),
+            "role": "admin",
+            "enabled": True,
+            "pwd_epoch": 0,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        seeded["done"] = True
+
+    _load_users_mutate(_do)
+    if seeded["done"]:
+        if ADMIN_PASSWORD:
+            print("[seed] 已从 ADMIN_PASSWORD 创建 admin 账号（用户名: admin）", flush=True)
+        else:
+            print(f"[seed] 已创建 admin 账号，随机密码（仅此一次）：{pwd}", flush=True)
+
+
+# ── token：携带 user_id + pwd_epoch 的 HMAC，撤销靠每次查 user ──
+
+
+def _make_token(user: dict) -> str:
     expires = int(time.time()) + TOKEN_TTL
-    sig = hmac.new(TOKEN_SECRET.encode(), f"admin:{expires}".encode(), hashlib.sha256).hexdigest()
-    return f"{expires}:{sig}"
+    uid = user["id"]
+    epoch = user.get("pwd_epoch", 0)
+    sig = hmac.new(TOKEN_SECRET.encode(), f"{uid}:{expires}:{epoch}".encode(), hashlib.sha256).hexdigest()
+    return f"{uid}:{expires}:{sig}"
 
 
-def _verify_token(authorization: str | None) -> bool:
+def _verify_token(authorization: str | None) -> dict | None:
+    """校验签名+过期，并从 users.json 重查 user（enabled / pwd_epoch）。返回 user 或 None"""
     if not authorization or not authorization.startswith("Bearer "):
-        return False
+        return None
     token = authorization[7:]
     try:
-        expires_str, sig = token.split(":", 1)
+        uid, expires_str, sig = token.split(":", 2)
         expires = int(expires_str)
     except ValueError:
-        return False
+        return None
     if time.time() > expires:
-        return False
-    expected = hmac.new(TOKEN_SECRET.encode(), f"admin:{expires}".encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(sig, expected)
+        return None
+    user = _find_user(_load_users(), uid=uid)
+    if not user or not user.get("enabled", True):
+        return None
+    epoch = user.get("pwd_epoch", 0)
+    expected = hmac.new(TOKEN_SECRET.encode(), f"{uid}:{expires}:{epoch}".encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None
+    return user
 
 
-def _require_admin(authorization: str | None) -> None:
-    # 未配置管理密码时写操作一律拒绝（fail-closed），避免裸奔
-    if not ADMIN_PASSWORD:
-        raise HTTPException(status_code=403, detail="管理密码未配置，写操作已禁用")
-    if not _verify_token(authorization):
-        raise HTTPException(status_code=401, detail="未授权，请先登录管理模式")
+def _require_user(authorization: str | None) -> dict:
+    user = _verify_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="未授权，请先登录")
+    return user
+
+
+def _require_admin(authorization: str | None) -> dict:
+    user = _require_user(authorization)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return user
 
 
 # ── categraf-http-admin 拨测联动 ──
@@ -604,6 +753,7 @@ def _find_duplicate(sites: list, data: dict, exclude_id: str | None = None) -> s
 
 
 class LoginIn(BaseModel):
+    username: str = Field(min_length=1, max_length=32)
     password: str
 
 
@@ -643,15 +793,18 @@ def login(body: LoginIn, request: Request):
     fails, first_ts = _login_attempts.get(ip, (0, now))
     if fails >= _LOGIN_MAX_FAILS:
         raise HTTPException(status_code=429, detail="尝试次数过多，请 15 分钟后再试")
-    if not ADMIN_PASSWORD or body.password != ADMIN_PASSWORD:
+    # 用户名不存在/密码错/已禁用 都返回同一 401，防用户名枚举
+    user = _find_user(_load_users(), username=body.username)
+    if not user or not user.get("enabled", True) or not _verify_password(body.password, user.get("password_hash", "")):
         _login_attempts[ip] = (fails + 1, first_ts)
-        raise HTTPException(status_code=401, detail="认证失败")
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
     _login_attempts.pop(ip, None)  # 成功登录重置计数
-    return {"token": _make_token(), "expires_in": TOKEN_TTL}
+    return {"token": _make_token(user), "expires_in": TOKEN_TTL, "role": user["role"]}
 
 
 @app.get("/api/sites")
-def list_sites():
+def list_sites(authorization: str | None = Header(default=None)):
+    _require_user(authorization)
     return _load()
 
 
@@ -761,8 +914,9 @@ def delete_site(site_id: str, authorization: str | None = Header(default=None)):
 
 
 @app.get("/api/monitor-status")
-def monitor_status():
+def monitor_status(authorization: str | None = Header(default=None)):
     """各系统拨测同步结果（内存态，供前端卡片展示）"""
+    _require_user(authorization)
     return _sync_status
 
 
@@ -946,6 +1100,134 @@ def export_sites(format: str = "json", authorization: str | None = Header(defaul
         media_type="application/json; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename=sites_{stamp}.json"},
     )
+
+
+# ── 用户管理（仅 admin）──
+
+
+class UserCreateIn(BaseModel):
+    username: str = Field(min_length=1, max_length=32)
+    password: str
+    role: Literal["admin", "user"] = "user"
+
+
+class UserUpdateIn(BaseModel):
+    enabled: bool | None = None
+    role: Literal["admin", "user"] | None = None
+
+
+class PasswordResetIn(BaseModel):
+    password: str
+
+
+def _public_user(u: dict) -> dict:
+    """脱去 password_hash / pwd_epoch 的对外视图"""
+    return {
+        "id": u["id"],
+        "username": u["username"],
+        "role": u.get("role", "user"),
+        "enabled": u.get("enabled", True),
+        "created_at": u.get("created_at", ""),
+        "updated_at": u.get("updated_at", ""),
+    }
+
+
+@app.get("/api/users")
+def list_users(authorization: str | None = Header(default=None)):
+    _require_admin(authorization)
+    return [_public_user(u) for u in _load_users()]
+
+
+@app.post("/api/users")
+def create_user(body: UserCreateIn, authorization: str | None = Header(default=None)):
+    _require_admin(authorization)
+    _validate_password(body.password)
+    uname = body.username.strip()
+    if not uname:
+        raise HTTPException(status_code=400, detail="用户名不能为空")
+
+    def _do(users):
+        if _find_user(users, username=uname):
+            raise HTTPException(status_code=409, detail=f"用户名 {uname} 已存在")
+        users.append({
+            "id": secrets.token_hex(4),
+            "username": uname,
+            "password_hash": _hash_password(body.password),
+            "role": body.role,
+            "enabled": True,
+            "pwd_epoch": 0,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        })
+
+    _load_users_mutate(_do)
+    return {"ok": True}
+
+
+@app.put("/api/users/{user_id}")
+def update_user(user_id: str, body: UserUpdateIn, authorization: str | None = Header(default=None)):
+    _require_admin(authorization)
+    result: dict = {}
+
+    def _do(users):
+        u = _find_user(users, uid=user_id)
+        if not u:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        if body.enabled is not None:
+            u["enabled"] = body.enabled
+        if body.role is not None and body.role != u.get("role"):
+            # 不允许把最后一个 admin 降级
+            if body.role != "admin":
+                others = [x for x in users if x.get("role") == "admin" and x["id"] != user_id]
+                if not others:
+                    raise HTTPException(status_code=400, detail="至少保留一个管理员")
+            u["role"] = body.role
+        u["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        result["user"] = _public_user(u)
+
+    _load_users_mutate(_do)
+    return result["user"]
+
+
+@app.post("/api/users/{user_id}/password")
+def reset_password(user_id: str, body: PasswordResetIn, authorization: str | None = Header(default=None)):
+    _require_admin(authorization)
+    _validate_password(body.password)
+
+    def _do(users):
+        u = _find_user(users, uid=user_id)
+        if not u:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        u["password_hash"] = _hash_password(body.password)
+        u["pwd_epoch"] = u.get("pwd_epoch", 0) + 1  # 旧 token 立即失效
+        u["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    _load_users_mutate(_do)
+    return {"ok": True}
+
+
+@app.delete("/api/users/{user_id}")
+def delete_user(user_id: str, authorization: str | None = Header(default=None)):
+    admin = _require_admin(authorization)
+    if admin["id"] == user_id:
+        raise HTTPException(status_code=400, detail="不能删除自己")
+
+    def _do(users):
+        u = _find_user(users, uid=user_id)
+        if not u:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        if u.get("role") == "admin":
+            others = [x for x in users if x.get("role") == "admin" and x["id"] != user_id]
+            if not others:
+                raise HTTPException(status_code=400, detail="至少保留一个管理员")
+        users.remove(u)
+
+    _load_users_mutate(_do)
+    return {"ok": True}
+
+
+# 启动时种子 admin（首次启动且 users.json 不存在）
+_seed_admin_if_needed()
 
 
 if __name__ == "__main__":
