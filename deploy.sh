@@ -19,8 +19,14 @@ DATA_DIR="$DIR/data"
 MODE="${1:-}"
 
 # 端口：shell 变量 > .env 里的 PORT > 默认 8000
-# 与 docker-compose.yml 的 ${PORT:-8000} 同源，避免"检查的端口"和"实际绑定的端口"不一致
-PORT="${PORT:-$(grep -E '^PORT=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)}"
+# 与 docker-compose.yml 的 ${PORT:-8000} 同源，避免"检查的端口"和"实际绑定的端口"不一致。
+# 注意：.env 没有 PORT 行时 grep 返回 1，本文件是 set -euo pipefail，
+# 写成 PORT="${PORT:-$(grep ...)}" 会让赋值语句整体失败 → 脚本静默退出、一行输出都没有。
+# 所以拆成显式判空 + || true。
+PORT="${PORT:-}"
+if [ -z "$PORT" ]; then
+    PORT="$(grep -E '^PORT=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+fi
 PORT="${PORT:-8000}"
 export PORT
 
@@ -50,7 +56,8 @@ check_prereqs() {
         echo "❌ Docker 服务未运行，请启动 Docker"
         exit 1
     fi
-    echo "✅ Docker $(docker --version | grep -oP '\d+\.\d+\.\d+' | head -1) 就绪"
+    # 不用 grep -P：非 UTF-8 locale 下 GNU grep 会报 "supports only unibyte and UTF-8 locales"
+    echo "✅ Docker $(docker --version | sed 's/.*version //;s/[, ].*//' | head -1) 就绪"
 }
 
 # ── 创建 .env ──
@@ -156,12 +163,38 @@ setup_mysql_password() {
     fi
 }
 
+# ── 前置检查：compose 与 MYSQL_HOST 是否一致 ──
+# 已有 MySQL 的用户忘了删 compose 里的 mysql 服务块时会炸在 docker compose up：
+#   ${MYSQL_ROOT_PASSWORD:?} 守卫缺失变量 → 直接失败；或 mysql 容器多起来但应用连的是外部库，
+#   而文档里的备份命令 `docker compose exec mysql ... mysqldump` 会打到那个空库，备份到空数据。
+check_compose_mysql() {
+    [ -f docker-compose.yml ] || return 0
+    grep -qE '^[[:space:]]+mysql:[[:space:]]*$' docker-compose.yml || return 0
+    local host_val
+    host_val=$(grep -E '^MYSQL_HOST=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+    host_val="${host_val:-mysql}"
+    [ "$host_val" = "mysql" ] && return 0
+    echo "❌ MYSQL_HOST=$host_val 指向外部数据库，但 docker-compose.yml 里还有内置 mysql 服务"
+    echo ""
+    echo "   这样 compose 会因为 MYSQL_ROOT_PASSWORD 未设置直接失败；"
+    echo "   就算塞个假密码绕过，也会多起一个闲置的空 mysql 容器，"
+    echo "   而文档里的备份命令会打到那个空库，把空数据当成备份存下来。"
+    echo ""
+    echo "   先从 docker-compose.yml 删掉三处，再重新部署："
+    echo "     ① services 下的整个 mysql: 服务块"
+    echo "     ② sites-nav 下的 depends_on 块"
+    echo "     ③ 文件末尾的 volumes: mysql_data:"
+    echo ""
+    echo "   详见 DEPLOY.md → 用已有 MySQL"
+    exit 1
+}
+
 # ── 端口检查 ──
 check_port() {
     if command -v ss >/dev/null 2>&1; then
         if ss -ltn 2>/dev/null | grep -q ":${PORT} "; then
             local pid
-            pid=$(ss -ltnp 2>/dev/null | grep ":${PORT} " | grep -oP 'pid=\K\d+' | head -1)
+            pid=$(ss -ltnp 2>/dev/null | grep ":${PORT} " | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -1)
             echo "❌ 端口 $PORT 已被占用${pid:+ (PID $pid)}"
             echo "   先执行: ./deploy.sh --stop 或 kill $pid"
             exit 1
@@ -183,7 +216,7 @@ wait_healthy() {
             h=$(curl -s "http://127.0.0.1:${PORT}/health")
             if echo "$h" | grep -q "data_warning"; then
                 echo " ⚠️ 恢复"
-                echo "   警告: $(echo "$h" | grep -oP 'data_warning.{0,60}')"
+                echo "   警告: $(echo "$h" | sed -n 's/.*"data_warning":"\([^"]*\)".*/\1/p' | head -1)"
             else
                 echo " ✅"
             fi
@@ -255,6 +288,7 @@ case "$MODE" in
         setup_env
         setup_password 0
         setup_mysql_password
+        check_compose_mysql
         check_port
         do_deploy
         ;;
@@ -263,6 +297,7 @@ case "$MODE" in
         setup_env
         setup_password 1
         setup_mysql_password
+        check_compose_mysql
         check_port
         do_deploy
         ;;

@@ -165,7 +165,12 @@ fi
 
 # ── 5. 端口冲突处理 ─────────────────────────────────────────────
 # PORT：shell 变量 > .env 里的 PORT > 默认 8000，与 docker-compose.yml 的 ${PORT:-8000} 同源
-PORT="${PORT:-$(grep -E '^PORT=' .env 2>/dev/null | head -1 | cut -d= -f2-)}"
+# .env 没有 PORT 行时 grep 返回 1，本文件是 set -euo pipefail，
+# 写成 PORT="${PORT:-$(grep ...)}" 会让赋值整体失败 → 脚本静默退出一行不输出。
+PORT="${PORT:-}"
+if [ -z "$PORT" ]; then
+  PORT="$(grep -E '^PORT=' .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
+fi
 PORT="${PORT:-8000}"
 export PORT
 # 只清自己项目占的端口；被无关进程占用时留给 deploy.sh 报清楚，不替用户杀进程
