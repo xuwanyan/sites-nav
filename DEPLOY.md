@@ -2,6 +2,16 @@
 
 服务器上一条命令拉代码 + 构建镜像 + 启动 + 探活，可重复执行。
 
+## 先选一种：MySQL 放哪
+
+| 你的情况 | 用哪种 | 看哪节 |
+|---|---|---|
+| 服务器上没装 MySQL，想省事 | **内置**（compose 自带 mysql 容器，默认配置） | [一键部署](#一键部署) |
+| 服务器上已有 MySQL，不想再加一个容器 | **已有实例** | [用已有 MySQL](#用已有-mysql) |
+| 已有 MySQL 在另一台机器 | **已有实例** | 同上，`MYSQL_HOST` 填那台机器的地址 |
+
+应用代码两种情况完全一样，差别只在 `.env` 的 `MYSQL_HOST` 和 `docker-compose.yml`。**建议先用内置跑通**，确认没问题后再决定是否并入已有库。切换方向：内置 → 已有（本文有步骤）；已有 → 内置（把 `.env` 改回 `MYSQL_HOST=mysql`，把 compose 的 mysql 块和 `volumes` 补回来，重启即可，数据在两边各存一份，不会丢）。
+
 ## 一键部署
 
 ```bash
@@ -58,6 +68,106 @@ PORT=8080
 
 `/root` 作为服务目录不理想（占 root 家目录、分区常较小、不便于备份脚本按路径匹配），`/opt` 或 `/data` 更常规。
 
+## 用已有 MySQL
+
+服务器上已有 MySQL 且不想再跑一个 mysql 容器时走这条路。三步。
+
+### 1. 建库建账号
+
+```sql
+CREATE DATABASE IF NOT EXISTS sites_nav
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE USER 'sites_nav'@'%' IDENTIFIED BY '<随机强密码>';
+
+-- 最小权限：应用只需要这 5 个。CREATE 是必需的，启动时自动建 users 表
+GRANT CREATE, SELECT, INSERT, UPDATE, DELETE ON sites_nav.* TO 'sites_nav'@'%';
+
+FLUSH PRIVILEGES;
+```
+
+**库必须你先建，表不用。** 应用启动会自动 `CREATE TABLE IF NOT EXISTS users`，但库不存在会直接报 `1049 Unknown database` 并中止启动。
+
+### 2. 改 `.env`
+
+```
+MYSQL_HOST=<见下方说明>
+MYSQL_PORT=3306
+MYSQL_USER=sites_nav
+MYSQL_PASSWORD=<刚设的强密码>
+MYSQL_DATABASE=sites_nav
+```
+
+**`MYSQL_HOST` 填什么**（最容易错的一步）：
+
+| MySQL 在哪 | 填 |
+|---|---|
+| 和 sites-nav 同一台机器，装在宿主机上 | `host.docker.internal` |
+| 另一台机器 | 那台的内网 IP / 域名 |
+| 同 compose 里的另一个服务 | 那个服务的 `name` |
+
+**别填 `127.0.0.1`**：sites-nav 跑在容器里，容器自己的 loopback 不是你宿主机的 MySQL。
+
+MySQL 侧要确认：`bind-address` 放得进容器过来的连接（不能只绑 `127.0.0.1`），用户授权的 host（`'%'` 或具体网段）包含容器出口 IP。
+
+> `MYSQL_HOST` 不是 `mysql` 时，`bootstrap.sh` / `deploy.sh` **不会**生成 `MYSQL_PASSWORD`——只打印一行提示让你自己填。这是故意的：代填等于拿随机密码去连你的库。
+
+### 3. 从 `docker-compose.yml` 删掉内置 mysql
+
+不删这一步 compose 会直接报错退出（`${MYSQL_ROOT_PASSWORD:?...}` 守卫拦下）。删三处：
+
+```yaml
+services:
+  # ① 整个 mysql: 服务块（从 "  mysql:" 到它的 healthcheck 结束）全删
+
+  sites-nav:
+    # ...
+    # ② 这段删掉
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+# ③ 文件末尾这两行删掉
+volumes:
+  mysql_data:
+```
+
+### 验证
+
+```bash
+cd /opt/sites-nav
+docker compose up -d
+docker compose logs -f sites-nav   # 应出现 [seed] 已从 ADMIN_PASSWORD 创建 admin 账号
+curl http://127.0.0.1:8000/health  # {"ok":true}；MySQL 不通会返回 503
+```
+
+启动失败时 `logs` 里有 `[fatal] 无法连接 MySQL <host>:<port>/<db>` 加错误码：
+
+| 错误码 | 含义 |
+|---|---|
+| `1049` | 库没建（第 1 步漏了） |
+| `1045` | 账号或密码错，或授权 host 不匹配 |
+| `1044` | 权限不够（缺 `CREATE` 之类） |
+| `2003` | 网络不通：`MYSQL_HOST` 填错、防火墙、`bind-address` |
+
+### 备份命令的差异
+
+外部 MySQL 不能用 `docker compose exec mysql ...`，改用下面任一种：
+
+```bash
+# 方式 A：宿主机装 mysql 客户端
+apt install -y mysql-client        # 或 yum install -y mysql
+mysqldump -h10.0.1.5 -usites_nav -p sites_nav --single-transaction --routines \
+  > /backup/sites-nav-users-$(date +\%F).sql
+
+# 方式 B：临时拉 mysql 镜像跑，宿主机不用装客户端
+docker run --rm -e MYSQL_PWD='<密码>' mysql:8.0 \
+  mysqldump -h10.0.1.5 -usites_nav --single-transaction --routines sites_nav \
+  > /backup/sites-nav-users-$(date +\%F).sql
+```
+
+站点数据的备份命令不受影响（仍是复制 `data/`）。
+
 ## 服务器前提
 
 - Docker + Compose V2（`docker compose version` 能跑通）
@@ -66,7 +176,7 @@ PORT=8080
 
 脚本会检查这些，缺了直接报清楚缺哪个。
 
-## 首次部署后会自动处理的两件事
+## 首次部署后会自动处理的三件事
 
 1. **脚本执行位**：从 Windows 提交的 `.sh` mode 是 `100644`，脚本内 `chmod +x *.sh` 补上
 2. **`data/` 目录归属**：容器 `read_only` + 非 root，唯一可写位置是 `./data`。脚本从镜像解析运行用户 UID 后 `chown`，避免"页面能看、一点新增就 500"的 PermissionError
@@ -166,10 +276,19 @@ server {
 
 ```bash
 pip install -r requirements.txt
-docker compose up -d mysql        # 起一个 MySQL 给应用连（或把 .env 的 MYSQL_* 指向已有实例）
-python run.py          # 带 --reload，改 app.py 自动重载
+docker compose up -d mysql        # 起一个 MySQL 给应用连
+python run.py                     # 带 --reload，改 app.py 自动重载
 ```
 
 `run.py` 已加 `if __name__ == '__main__'` 保护，Windows 上 `multiprocessing` 用 spawn 不会崩。
 
 > 注意：每次热重载都会轮换 `TOKEN_SECRET`，保存 `app.py` 后需要重新登录。
+
+### 本机没有 Docker 怎么办
+
+应用启动强依赖 MySQL（连不上直接中止，这是刻意的），所以需要一个真数据库。两个办法：
+
+1. **装 Docker Desktop**（推荐）。生产就是 `docker compose` 跑的，本地起同一个 mysql 容器最接近真实环境，认证插件也一致（MySQL 8 默认 `caching_sha2_password`，`cryptography` 依赖就是为此加的）。
+2. **本机裸装 MySQL/MariaDB**，把 `.env` 的 `MYSQL_*` 指向 `127.0.0.1`。省事但版本和认证插件可能和生产不同，`caching_sha2_password` 那条路径测不到。
+
+注意：**本地填的 `.env` 别拷到服务器**。`MYSQL_HOST=127.0.0.1` 会让 `bootstrap.sh` 判定为"外部实例"而不生成密码，服务器上那份 `.env` 是独立的、由 bootstrap 从 `.env.example` 新建。

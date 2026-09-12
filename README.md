@@ -71,6 +71,10 @@ docker compose up -d --build
 | `CATEGRAF_ADMIN_USER` | 否 | `admin` | 拨测管理端登录用户名 |
 | `CATEGRAF_ADMIN_PASS` | 否 | 空 | 拨测管理端登录密码；与 URL 同时配置才启用联动 |
 
+**用已有 MySQL（服务器上已装）时**：`.env` 里把 `MYSQL_HOST` 改成实际地址，并从 `docker-compose.yml` 删掉内置 `mysql` 服务块（不删会因 `${MYSQL_ROOT_PASSWORD:?}` 守卫直接报错）。建库建账号 SQL、`MYSQL_HOST` 的取值、备份命令差异见 [DEPLOY.md → 用已有 MySQL](DEPLOY.md#用已有-mysql)。
+
+> 容易踩的坑：MySQL 装在跑 Docker 的同一台宿主机上时，`MYSQL_HOST` 填 `host.docker.internal`，**不是** `127.0.0.1`（容器里的 loopback 不是你宿主机的 MySQL）。
+
 ## 端口
 
 默认 `8000`，改 `docker-compose.yml` 的 `ports` 即可。
