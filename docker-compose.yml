@@ -1,13 +1,21 @@
 services:
   mysql:
     # 用户与权限存储。站点数据仍在 ./data（容器只读挂载），两者互不影响。
-    # 已有自己的 MySQL 时删掉本服务，把 .env 的 MYSQL_* 指向已有实例即可。
+    #
+    # 用 profiles 做开关：deploy.sh / bootstrap.sh 读 .env 的 MYSQL_HOST，
+    # 值为 mysql 时 export COMPOSE_PROFILES=builtin-mysql 激活本服务；
+    # 指向已有 MySQL 时不激活。**两种部署方式切换只改 .env，本文件不用动。**
+    profiles: ["builtin-mysql"]
     image: mysql:8.0
     restart: unless-stopped
     environment:
-      # 这两个只在数据卷首次初始化时生效，之后改 .env 不会改已创建的账号
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 设置 MYSQL_ROOT_PASSWORD（bootstrap 会自动生成）}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 设置 MYSQL_PASSWORD（bootstrap 会自动生成）}
+      # 用 :- 而不是 :?：:? 在 profile 未激活时也会触发变量校验，
+      # 会让"用已有 MySQL"的场景整个 compose 配置直接失败。
+      # 空值时 mysql 容器自己拒绝启动（"root password ... is not set"），
+      # docker compose logs mysql 能看到原因；deploy.sh 在内置场景下会先生成这两个值。
+      # 注意：这两个只在数据卷首次初始化时生效，之后改 .env 不会改已创建的账号
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-sites_nav}
       MYSQL_USER: ${MYSQL_USER:-sites_nav}
       TZ: Asia/Shanghai
@@ -35,9 +43,11 @@ services:
       - "${PORT:-8000}:8000"
     # 从 .env 读取所有变量（含未来新增的），避免硬编码白名单漏掉新变量
     env_file: .env
-    depends_on:
-      mysql:
-        condition: service_healthy
+    # 故意不用 depends_on：mysql 是 profile 开关服务，未激活时依赖它会报
+    # "service sites-nav depends on service mysql which is defined as a profile
+    #  that is not active"。启动顺序交给应用侧处理 —— app.py 的 _init_db
+    # 会重试 30 秒等 MySQL 就绪，连不上才中止启动（配 restart: unless-stopped
+    # 会自动重试），效果等同 depends_on 且两种部署方式都不用改本文件。
     volumes:
       - ./data:/app/data          # 站点数据持久化，备份即复制 ./data/sites.json
     restart: unless-stopped
@@ -59,4 +69,6 @@ services:
       start_period: 10s
 
 volumes:
+  # mysql 服务未激活时这个卷仍会被声明（空卷，无害），
+  # 这样从"已有 MySQL"切回内置时不用回来补这一行
   mysql_data:

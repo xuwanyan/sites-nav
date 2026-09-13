@@ -79,16 +79,31 @@ cd "$APP_DIR"
 chmod +x *.sh
 OK "已补齐脚本执行位"
 
+# ── 1.5 内置 MySQL 开关 ─────────────────────────────────────────
+# compose 里 mysql 服务挂在 profiles 上，按 .env 的 MYSQL_HOST 决定是否激活。
+# 这里 .env 可能还没生成（在下方第 4 步创建），取不到时按默认内置处理；
+# 最终 deploy.sh 会用真实的 .env 重算一次。
+MH="$(grep -E '^MYSQL_HOST=' .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
+MH="${MH:-mysql}"
+if [ "$MH" = "mysql" ]; then
+  export COMPOSE_PROFILES="builtin-mysql"
+else
+  # 必须显式清掉：本脚本末尾 exec ./deploy.sh 会继承这里的导出，
+  # 而 deploy.sh 只负责"该激活时激活"、不负责"该跳过时跳过"，
+  # 父进程留下的 COMPOSE_PROFILES 会让外部 MySQL 场景多起一个空 mysql 容器。
+  unset COMPOSE_PROFILES
+fi
+
 # ── 2. 构建镜像 ─────────────────────────────────────────────────
 LOG "构建镜像"
 docker compose build
 if [ -z "$IMAGE" ]; then
-  # 优先用 compose 自己的解析结果
-  IMAGE="$(docker compose config --images 2>/dev/null | head -1 || true)"
-fi
-if [ -z "$IMAGE" ]; then
-  # compose < 2.3 没有 config --images，退回直接读 compose 文件
-  IMAGE="$(grep -E '^[[:space:]]*image:' docker-compose.yml 2>/dev/null | head -1 | awk '{print $NF}' | tr -d '"')"
+  # 不能用 `docker compose config --images | head -1`：内置 mysql 服务激活时
+  # 它会同时列出 mysql:8.0 和 sites-nav:latest，head -1 拿到 mysql；
+  # 直接 grep 整个 compose 文件取第一个 image: 也一样（mysql 块在前面）。
+  # 下面只取 sites-nav 服务块内的值，不依赖 Compose 的输出顺序。
+  # compose 里 image 是字面量 sites-nav:latest，无插值，awk 与 compose 解析结果一致。
+  IMAGE="$(awk '/^  sites-nav:/{f=1} f && /^[[:space:]]{4}image:/{print $2; exit}' docker-compose.yml | tr -d '"' || true)"
 fi
 IMAGE="${IMAGE:-sites-nav:latest}"
 OK "镜像就绪: $IMAGE"
@@ -152,7 +167,8 @@ else
   else
     OK "MYSQL_PASSWORD 已配置"
   fi
-  # MYSQL_ROOT_PASSWORD 只在数据卷首次初始化时生效；缺失时 compose 的 :? 守卫会直接报错
+  # MYSQL_ROOT_PASSWORD 只在数据卷首次初始化时生效；缺失时 mysql 容器自己拒绝启动
+  # （compose 里是 ${MYSQL_ROOT_PASSWORD:-}，不会在配置阶段报错）
   if [ -z "$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' .env | head -1)" ]; then
     MR="$(openssl rand -hex 24)"
     T="$(mktemp)"
@@ -176,7 +192,8 @@ export PORT
 # 只清自己项目占的端口；被无关进程占用时留给 deploy.sh 报清楚，不替用户杀进程
 if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${PORT}$" && [ -n "$(docker compose ps -q 2>/dev/null)" ]; then
   WARN "端口 $PORT 被现有容器占用，先停止旧容器"
-  docker compose down
+  # --remove-orphans：切换部署方式后不在当前配置里的 mysql 容器也要一起停
+  docker compose down --remove-orphans
 fi
 
 # ── 6. 启动 + 探活 ──────────────────────────────────────────────

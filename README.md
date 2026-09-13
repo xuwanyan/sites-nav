@@ -71,7 +71,7 @@ docker compose up -d --build
 | `CATEGRAF_ADMIN_USER` | 否 | `admin` | 拨测管理端登录用户名 |
 | `CATEGRAF_ADMIN_PASS` | 否 | 空 | 拨测管理端登录密码；与 URL 同时配置才启用联动 |
 
-**用已有 MySQL（服务器上已装）时**：`.env` 里把 `MYSQL_HOST` 改成实际地址，并从 `docker-compose.yml` 删掉内置 `mysql` 服务块（不删会因 `${MYSQL_ROOT_PASSWORD:?}` 守卫直接报错）。建库建账号 SQL、`MYSQL_HOST` 的取值、备份命令差异见 [DEPLOY.md → 用已有 MySQL](DEPLOY.md#用已有-mysql)。
+**用已有 MySQL（服务器上已装）时**：`.env` 里把 `MYSQL_HOST` 改成实际地址，**`docker-compose.yml` 不用动**——内置 mysql 服务挂在 `profiles` 上，部署脚本会按 `.env` 自动决定是否激活。改完重跑 `deploy.sh` 即可。建库建账号 SQL、`MYSQL_HOST` 的取值、备份命令差异见 [DEPLOY.md → 用已有 MySQL](DEPLOY.md#用已有-mysql)。
 
 > 容易踩的坑：MySQL 装在跑 Docker 的同一台宿主机上时，`MYSQL_HOST` 填 `host.docker.internal`，**不是** `127.0.0.1`（容器里的 loopback 不是你宿主机的 MySQL）。
 
@@ -88,7 +88,8 @@ docker compose up -d --build
 tar czf /backup/sites-nav-sites-$(date +\%F).tgz -C /opt/sites-nav data
 
 # 用户与权限（MySQL）
-docker compose exec -T mysql sh -c 'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines sites_nav' \
+COMPOSE_PROFILES=builtin-mysql docker compose exec -T mysql sh -c \
+  'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines sites_nav' \
   > /backup/sites-nav-users-$(date +\%F).sql
 ```
 
@@ -152,7 +153,7 @@ docker compose up -d
 ```bash
 pip install -r requirements.txt
 # 先起一个 MySQL：用 compose 内置的，或把 .env 的 MYSQL_* 指向已有实例
-docker compose up -d mysql
+COMPOSE_PROFILES=builtin-mysql docker compose up -d mysql
 python run.py          # 带 --reload，改 app.py 自动重载
 ```
 

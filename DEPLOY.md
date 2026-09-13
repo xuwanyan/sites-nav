@@ -10,7 +10,11 @@
 | 服务器上已有 MySQL，不想再加一个容器 | **已有实例** | [用已有 MySQL](#用已有-mysql) |
 | 已有 MySQL 在另一台机器 | **已有实例** | 同上，`MYSQL_HOST` 填那台机器的地址 |
 
-应用代码两种情况完全一样，差别只在 `.env` 的 `MYSQL_HOST` 和 `docker-compose.yml`。**建议先用内置跑通**，确认没问题后再决定是否并入已有库。切换方向：内置 → 已有（本文有步骤）；已有 → 内置（把 `.env` 改回 `MYSQL_HOST=mysql`，把 compose 的 mysql 块和 `volumes` 补回来，重启即可，数据在两边各存一份，不会丢）。
+应用代码两种情况完全一样，**差别只在 `.env` 的 `MYSQL_HOST` 一个变量**。`docker-compose.yml` 两种情况都不用改——内置 mysql 服务挂在 `profiles` 上，部署脚本会按 `.env` 自动激活或跳过。
+
+切换两种部署方式只改 `.env` 后重跑 `deploy.sh` 即可，数据在两边各存一份，不会丢。建议先用内置跑通，确认没问题后再决定是否并入已有库。
+
+> **从内置切到已有 MySQL 后**，旧的 mysql 容器不再属于当前 compose 配置。`./deploy.sh --stop` 带 `--remove-orphans` 会把它一起停掉；但 `mysql_data` 卷不会被删（没带 `-v`），之后想切回内置，数据还在。
 
 ## 一键部署
 
@@ -112,25 +116,11 @@ MySQL 侧要确认：`bind-address` 放得进容器过来的连接（不能只�
 
 > `MYSQL_HOST` 不是 `mysql` 时，`bootstrap.sh` / `deploy.sh` **不会**生成 `MYSQL_PASSWORD`——只打印一行提示让你自己填。这是故意的：代填等于拿随机密码去连你的库。
 
-### 3. 从 `docker-compose.yml` 删掉内置 mysql
+### 3. `docker-compose.yml` 不用改
 
-不删这一步 compose 会直接报错退出（`${MYSQL_ROOT_PASSWORD:?...}` 守卫拦下）。删三处：
+内置 mysql 服务挂在 `profiles: ["builtin-mysql"]` 上，`deploy.sh` / `bootstrap.sh` 会读 `.env` 的 `MYSQL_HOST` 自动决定是否激活（`export COMPOSE_PROFILES`）。**两种部署方式切换只改 `.env` 一个文件。**
 
-```yaml
-services:
-  # ① 整个 mysql: 服务块（从 "  mysql:" 到它的 healthcheck 结束）全删
-
-  sites-nav:
-    # ...
-    # ② 这段删掉
-    depends_on:
-      mysql:
-        condition: service_healthy
-
-# ③ 文件末尾这两行删掉
-volumes:
-  mysql_data:
-```
+所以用已有 MySQL 的完整改动就是第 1、2 步：MySQL 里建库建账号 + `.env` 填真实值。`deploy.sh` 照常跑。
 
 ### 验证
 
@@ -208,8 +198,8 @@ docker compose up -d
 # 站点数据：复制文件即可
 tar czf /backup/sites-nav-sites-$(date +\%F).tgz -C /opt/sites-nav data
 
-# 用户与权限：mysqldump
-cd /opt/sites-nav && docker compose exec -T mysql sh -c \
+# 用户与权限：mysqldump（走内置 mysql 时注意 --profile，见下）
+cd /opt/sites-nav && COMPOSE_PROFILES=builtin-mysql docker compose exec -T mysql sh -c \
   'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines sites_nav' \
   > /backup/sites-nav-users-$(date +\%F).sql
 ```
@@ -217,8 +207,12 @@ cd /opt/sites-nav && docker compose exec -T mysql sh -c \
 cron 合起来一条：
 
 ```
-15 3 * * * cd /opt/sites-nav && tar czf /backup/sites-nav-sites-$(date +\%F).tgz data && docker compose exec -T mysql sh -c 'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines sites_nav' > /backup/sites-nav-users-$(date +\%F).sql && find /backup -name 'sites-nav-*' -mtime +30 -delete
+15 3 * * * cd /opt/sites-nav && tar czf /backup/sites-nav-sites-$(date +\%F).tgz data && COMPOSE_PROFILES=builtin-mysql docker compose exec -T mysql sh -c 'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines sites_nav' > /backup/sites-nav-users-$(date +\%F).sql && find /backup -name 'sites-nav-*' -mtime +30 -delete
 ```
+
+> **`--profile` 只在走内置 mysql 时需要。** mysql 服务挂在 `profiles` 上，手动跑 `docker compose exec mysql ...` 时 compose 看不到它，会报 "no such service"。部署脚本内部会自动 `export COMPOSE_PROFILES`，但你手敲命令或在 cron 里得自己带上。
+>
+> 用已有 MySQL 时不要跑上面这条——它连的是那个空容器库。改成对真实实例跑 mysqldump（见 [用已有 MySQL → 备份命令的差异](#备份命令的差异)）。
 
 - MySQL 数据在命名卷 `mysql_data`，`docker compose down`（不带 `-v`）不会删它；要彻底清库才需要 `docker volume rm`
 - 应用启动会自动建表（`CREATE TABLE IF NOT EXISTS`），空库也能直接起
@@ -268,16 +262,19 @@ server {
 | 改了 app.py 不生效 | 没开 reload 或缓存 | 容器重建即 `docker compose up -d --build`；本地开发用 `python run.py`（带 `--reload`） |
 | token 频繁失效 | 重启/重载轮换了 `TOKEN_SECRET` | 正常现象（安全设计），重启后去 `/admin` 重新登录 |
 | 全站 503「用户服务暂不可用」 | MySQL 连不上 | `docker compose ps` 看 mysql 是否 healthy，`docker compose logs mysql` 查原因。**恢复后应用自动可用，不用重启**，已登录用户的会话也不丢 |
-| 应用起不来：无法连接 MySQL | `.env` 的 `MYSQL_*` 填错，或 mysql 服务没起 | `docker compose up -d mysql`；核对 `MYSQL_HOST`（走内置服务填 `mysql`）/ `MYSQL_PASSWORD` |
-| 应用起不来：MYSQL_ROOT_PASSWORD 未设置 | compose 的 `:?` 守卫拦下 | `bash deploy.sh` 或 `bootstrap.sh` 会自动生成并写进 `.env` |
+| 应用起不来：无法连接 MySQL | `.env` 的 `MYSQL_*` 填错，或 mysql 服务没起 | 走内置：`COMPOSE_PROFILES=builtin-mysql docker compose up -d mysql`；核对 `MYSQL_HOST`（走内置填 `mysql`）/ `MYSQL_PASSWORD` |
+| 应用起不来：无法连接 MySQL | 用了已有实例但库/账号/网络不对 | `docker compose logs sites-nav` 看 `[fatal]` 行的错误码：`1049` 库没建、`1045` 账号密码或授权 host、`1044` 权限不够、`2003` 网络不通 |
+| mysql 容器起了但 `root password ... is not set` | `.env` 里 `MYSQL_ROOT_PASSWORD` 是空 | 走 `deploy.sh` / `bootstrap.sh` 会自动生成并写进 `.env`；绕过脚本手敲 `docker compose up` 就会遇到 |
+| 手动 `docker compose exec mysql ...` 报 no such service | mysql 挂在 profile 上，未激活时 compose 看不到 | 命令前加 `COMPOSE_PROFILES=builtin-mysql` |
+| `docker compose ps` 里没有 mysql 但它还在跑 | 切到已有 MySQL 后 mysql 已不在当前配置里，`down` 不带 `--remove-orphans` 不会停它 | `./deploy.sh --stop`（已带该参数），或 `docker compose down --remove-orphans` |
 | 登录 429 尝试次数过多 | 同一 IP 15 分钟内失败 10 次 | 等 15 分钟；反向代理后记得配 `X-Forwarded-For`，否则全公司共享一个计数 |
 
 ## 本地开发（非 Docker）
 
 ```bash
 pip install -r requirements.txt
-docker compose up -d mysql        # 起一个 MySQL 给应用连
-python run.py                     # 带 --reload，改 app.py 自动重载
+COMPOSE_PROFILES=builtin-mysql docker compose up -d mysql   # 起一个 MySQL 给应用连
+python run.py                                                # 带 --reload，改 app.py 自动重载
 ```
 
 `run.py` 已加 `if __name__ == '__main__'` 保护，Windows 上 `multiprocessing` 用 spawn 不会崩。
