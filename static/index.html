@@ -75,6 +75,9 @@
   .btn-danger { background: #ff4d4f; color: #fff; }
   .btn-danger:hover { background: #ff7875; }
   .btn-sm { padding: 4px 10px; font-size: 12px; }
+  /* 禁用态：自定义样式覆盖了浏览器默认，不加这条会看不出按钮已经点了没反应 */
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn:disabled:hover { background: #fff; color: #333; border-color: #d9d9d9; }
   .admin-badge {
     background: #52c41a;
     color: #fff;
@@ -579,7 +582,7 @@
           <input type="checkbox" id="f_monitor" style="width:auto;" onchange="toggleProbeParams()">
           <span>加入 categraf 自动拨测（域名优先探测）</span>
         </label>
-        <div style="font-size:11px; color:#8c8c8c; margin-top:4px;">仅当填了 URL 地址（域名/公网/内网）时可用；连接串形式的资源不支持拨测</div>
+        <div id="monitorHint" style="font-size:11px; color:#8c8c8c; margin-top:4px;">仅当填了 URL 地址（域名/公网/内网）时可用；连接串形式的资源不支持拨测</div>
       </div>
       <div class="form-row" id="probeParamsRow" style="display:none;">
         <div class="form-group">
@@ -766,6 +769,11 @@ async function withBusy(fn, btn) {
 // 分组卡（默认开）：同站点名按生产 / 测试聚成一张卡；用户可切「拆开模式」
 let groupByEnv = localStorage.getItem("groupByEnv") !== "false";
 let probeStatusMap = {};
+// 拨测联动是否已配置（CATEGRAF_ADMIN_URL / CATEGRAF_ADMIN_PASS）。
+// false 时「加入监控」置灰不可点 —— 后端会拒绝 monitor=true，
+// 提前禁用可避免用户点了才知道失败。
+let monitorEnabled = false;
+const MONITOR_OFF_TIP = "拨测联动未配置（缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS），请先在 .env 配好并重启容器";
 
 // 资源类型元数据：预设类型带图标和颜色，自定义类型走哈希兜底
 const KIND_META = {
@@ -849,7 +857,13 @@ async function loadSites() {
 // 拉取拨测同步状态，更新卡片上的 📡 图标（延迟几次以覆盖后台同步完成）
 async function refreshProbeStatus(retry = 2) {
   try {
-    probeStatusMap = await api("/api/monitor-status");
+    const [status, cfg] = await Promise.all([
+      api("/api/monitor-status"),
+      api("/api/monitor-config"),
+    ]);
+    probeStatusMap = status;
+    monitorEnabled = !!cfg.enabled;
+    updateMonitorBtn();   // 联动不可用时把表单里的复选框一起禁用
   } catch (e) { return; }
   Object.entries(probeStatusMap).forEach(([id, st]) => {
     const el = document.getElementById("probe-" + id);
@@ -1005,7 +1019,7 @@ function siteCard(s) {
         <span class="card-name">${escapeHtml(s.name)}</span>
         <span style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
           <span class="kind-tag" style="background:${meta.color}" title="${escapeAttr(s.kind || "网站")}">${meta.icon} ${escapeHtml(s.kind || "网站")}</span>
-          ${s.monitor ? `<span class="env-tag env-probe" title="${escapeAttr(probeTitle(s))}" id="probe-${escapeAttr(s.id)}">已监控</span>` : `<span class="env-tag env-off">未加入监控</span>`}
+          ${probeBadge(s)}
           ${s.env ? `<span class="env-tag ${envClass}">${escapeHtml(s.env)}</span>` : ""}
           ${isAdmin() ? `<span class="card-actions">
             ${monitorBtn(s)}
@@ -1033,12 +1047,28 @@ function hasAnyUrl(s) {
   );
 }
 
+// 拨测状态徽标。联动未配置时不能显示「已监控」——
+// 那种站点根本没有拨测任务，标记是上一次留下的脏状态，显示已监控会误导人。
+function probeBadge(s) {
+  if (!monitorEnabled) return `<span class="env-tag env-off" title="${escapeAttr(MONITOR_OFF_TIP)}">拨测未配置</span>`;
+  return s.monitor
+    ? `<span class="env-tag env-probe" title="${escapeAttr(probeTitle(s))}" id="probe-${escapeAttr(s.id)}">已监控</span>`
+    : `<span class="env-tag env-off">未加入监控</span>`;
+}
+
 // 监控快捷按钮：无 URL 的资源（只有连接串）不出按钮 —— 后端拨测要求公网 URL，点了必然 400
 function monitorBtn(s) {
   if (!hasAnyUrl(s)) return "";
-  return s.monitor
-    ? `<button class="btn btn-default btn-sm" onclick="quickMonitorOff('${escapeAttr(s.id)}')">⏹️ 取消监控</button>`
-    : `<button class="btn btn-default btn-sm" onclick="openProbeModal('${escapeAttr(s.id)}')">📡 加入监控</button>`;
+  // 已标记的站点仍允许取消：去掉标记只是改本地数据，不依赖联动，
+  // 否则联动配置被撤掉后，用户连清除自己之前留下的标记都做不到
+  if (s.monitor) {
+    return `<button class="btn btn-default btn-sm" onclick="quickMonitorOff('${escapeAttr(s.id)}')">⏹️ 取消监控</button>`;
+  }
+  if (!monitorEnabled) {
+    // 置灰不可点，而不是点了报 400。后端也会拒绝 monitor=true，这里是先于后端拦住。
+    return `<button class="btn btn-default btn-sm" disabled title="${escapeAttr(MONITOR_OFF_TIP)}">📡 加入监控</button>`;
+  }
+  return `<button class="btn btn-default btn-sm" onclick="openProbeModal('${escapeAttr(s.id)}')">📡 加入监控</button>`;
 }
 
 // 卡片主体：URL 行 + 连接块（哪个填了显示哪个，都填都显示）
@@ -1095,7 +1125,9 @@ function envCol(env, entrySites) {
     <div class="env-col-head">
       <span class="env-col-label ${isProd ? "prod" : "test"}">${label}</span>
       <span style="display:flex; align-items:center; gap:10px;">
-        ${entrySites.filter(s => s.monitor).map(s => `<span class="env-tag env-probe" id="probe-${escapeAttr(s.id)}" title="${escapeAttr(probeTitle(s))}" style="font-size:11px">📡 已监控</span>`).join("")}
+        ${entrySites.filter(s => s.monitor).map(s => monitorEnabled
+          ? `<span class="env-tag env-probe" id="probe-${escapeAttr(s.id)}" title="${escapeAttr(probeTitle(s))}" style="font-size:11px">📡 已监控</span>`
+          : `<span class="env-tag env-off" title="${escapeAttr(MONITOR_OFF_TIP)}" style="font-size:11px">拨测未配置</span>`).join("")}
         ${isAdmin() ? entrySites.map(s => monitorBtn(s)).join("") : ""}
         ${isAdmin() ? entrySites.map(s => `<button class="btn btn-default btn-sm" onclick="openEditSite('${escapeAttr(s.id)}')">✏️ 编辑</button>`).join("") : ""}
         ${isAdmin() ? entrySites.map(s => `<button class="btn btn-danger btn-sm" onclick="openDeleteModal('${escapeAttr(s.id)}','${escapeAttr(s.name)}','${escapeAttr(env)}')">🗑️ 删除</button>`).join("") : ""}
@@ -1465,7 +1497,17 @@ function updateMonitorBtn() {
   const isConnOnly = (preset !== "" && preset !== "网站"); // 缓存/MQ/数据库/存储
   const monitorCb = $("f_monitor");
   const paramsRow = $("probeParamsRow");
-  if (isConnOnly) {
+  // 提示文案随联动状态切换（monitorEnabled 由 refreshProbeStatus 拉取后调用本函数更新）
+  $("monitorHint").textContent = monitorEnabled
+    ? "仅当填了 URL 地址（域名/公网/内网）时可用；连接串形式的资源不支持拨测"
+    : MONITOR_OFF_TIP;
+  if (!monitorEnabled) {
+    // 联动未配置：整个拨测选项不可用，后端也会拒绝，这里先拦住
+    monitorCb.checked = false;
+    monitorCb.disabled = true;
+    monitorCb.style.opacity = ".5";
+    paramsRow.style.display = "none";
+  } else if (isConnOnly) {
     // 预设的非 URL 类型强制不加入
     monitorCb.checked = false;
     monitorCb.disabled = true;

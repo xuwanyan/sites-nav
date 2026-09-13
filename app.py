@@ -897,8 +897,15 @@ def _sync_probe_async(site: dict, action: str, extra_urls: set | None = None) ->
     threading.Thread(target=_run, daemon=True).start()
 
 
+# 中国大陆自 1991 年起无夏令时，固定 UTC+8 偏移即可，不需要 tzdata。
+# 不显式指定时区会得到容器本地时间（默认 UTC），比北京时间早 8 小时。
+# 不用 zoneinfo：python:slim 镜像不带 /usr/share/zoneinfo，会抛 ZoneInfoNotFoundError。
+TZ_CN = _dt.timezone(_dt.timedelta(hours=8), name="Asia/Shanghai")
+
+
 def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
+    """北京时间 YYYY-MM-DD HH:MM:SS。所有写入的时间戳统一走这里"""
+    return _dt.datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _find_duplicate(sites: list, data: dict, exclude_id: str | None = None) -> str:
@@ -1006,7 +1013,7 @@ def create_site(site: SiteIn, authorization: str | None = Header(default=None)):
     data = site.model_dump()
     data["name"] = (data.get("name") or "").strip()
     _validate_site_payload(data)
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    now = _now()
     item = {
         "id": secrets.token_hex(4),
         **data,
@@ -1027,10 +1034,25 @@ def create_site(site: SiteIn, authorization: str | None = Header(default=None)):
     return item
 
 
-def _validate_site_payload(data: dict) -> None:
-    """校验创建/更新站点的最小字段：URL 或连接串至少填一个；勾选拨测必须有 URL；拨测 URL 必须是公网地址（防 SSRF）"""
+def _validate_site_payload(data: dict, *, monitor_already_on: bool = False) -> None:
+    """校验创建/更新站点的最小字段：URL 或连接串至少填一个；勾选拨测必须有 URL；拨测 URL 必须是公网地址（防 SSRF）
+
+    monitor_already_on=True 表示该条目本来就是监控状态、monitor=true 不是本次新加的勾选。
+    这个区分是必须的：前端编辑时总是把 monitor 原样带上（sitePayload），
+    如果不区分，联动后来被关掉之后，已经勾选过的站点连改个备注都会被 400 挡下。
+    """
     if not any((data.get(k) or "").strip() for k in ("domain", "public_url", "private_url", "connection")):
         raise HTTPException(status_code=400, detail="域名/公网/内网/连接串至少填一个")
+    if data.get("monitor") and not monitor_already_on:
+        # 新勾选监控但联动未配置：直接拒绝，而不是把 monitor 标记写进去。
+        # 否则站点会永久显示「已监控」，实际一个拨测任务都没建 ——
+        # 用户看到的状态和真实情况完全不符。
+        if not _monitor_enabled():
+            raise HTTPException(
+                status_code=400,
+                detail="拨测联动未配置（缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS），"
+                       "无法加入监控；请先在 .env 配好这两项并重启容器",
+            )
     if data.get("monitor"):
         if not any((data.get(k) or "").strip() for k in ("domain", "public_url", "private_url")):
             raise HTTPException(status_code=400, detail="勾选拨测监控需要至少填一个 URL 地址")
@@ -1043,9 +1065,16 @@ def _validate_site_payload(data: dict) -> None:
 @app.put("/api/sites/{site_id}")
 def update_site(site_id: str, site: SiteIn, authorization: str | None = Header(default=None)):
     _require_admin(authorization)
+    # 先读一次现有记录，判断 monitor=true 是不是本次新加的勾选（见 _validate_site_payload）。
+    # 顺带让 404 在这里给出，不用等 _mutate。
+    # 这里是只读检查，可能与并发写入竞态；最坏情况是读到稍旧的 monitor 值，
+    # 只影响"是否放宽联动配置校验"这一项，不造成数据问题。
+    existing = next((s for s in _load() if s["id"] == site_id), None)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="条目不存在")
     data = site.model_dump()
     data["name"] = (data.get("name") or "").strip()
-    _validate_site_payload(data)
+    _validate_site_payload(data, monitor_already_on=bool(existing.get("monitor")))
 
     captured: dict = {}
 
@@ -1060,7 +1089,7 @@ def update_site(site_id: str, site: SiteIn, authorization: str | None = Header(d
         captured["old_probe_url"] = _pick_probe_url(item)
         captured["was_monitor"] = item.get("monitor", False)
 
-        updated = {**item, **data, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        updated = {**item, **data, "updated_at": _now()}
         item.clear()
         item.update(updated)
         captured["item"] = item
@@ -1109,6 +1138,18 @@ def monitor_status(authorization: str | None = Header(default=None)):
     """各系统拨测同步结果（内存态，供前端卡片展示）"""
     _require_user(authorization)
     return _sync_status
+
+
+@app.get("/api/monitor-config")
+def monitor_config(authorization: str | None = Header(default=None)):
+    """拨测联动是否已配置。前端据此把「加入监控」置灰 ——
+    后端未配置时会拒绝 monitor=true（见 _validate_site_payload），
+    所以前端必须提前禁用，否则用户点了才知道失败，还容易留下脏状态。"""
+    _require_user(authorization)
+    return {
+        "enabled": _monitor_enabled(),
+        "reason": "" if _monitor_enabled() else "缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS",
+    }
 
 
 # ── 批量导入 / 导出 ──
@@ -1232,7 +1273,7 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
             if c:
                 existing_conns.add(c)
 
-        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        now = _now()
         for item_data in parsed:
             name_key = (item_data["name"].strip().lower(), item_data["env"])
             dup_urls = {_norm_url(item_data.get(k)) for k in ("domain", "public_url", "private_url")} - {""}
@@ -1278,7 +1319,7 @@ def _export_csv(sites: list) -> bytes:
 def export_sites(format: str = "json", authorization: str | None = Header(default=None)):
     _require_admin(authorization)
     sites = _load()
-    stamp = time.strftime("%Y%m%d_%H%M%S")
+    stamp = _dt.datetime.now(TZ_CN).strftime("%Y%m%d_%H%M%S")
     if format == "csv":
         return Response(
             content=_export_csv(sites),

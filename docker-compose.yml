@@ -49,6 +49,12 @@ services:
       - "${PORT:-8000}:8000"
     # 从 .env 读取所有变量（含未来新增的），避免硬编码白名单漏掉新变量
     env_file: .env
+    # 东八区。app.py 的 _now() 已显式指定 Asia/Shanghai，这里再设一份是双保险：
+    # 没这行时容器是 UTC，任何漏掉显式时区的地方（含 Python 的 time.strftime）都会差 8 小时。
+    # 必须是 environment: 下的键 —— TZ 不是 service 级配置项，写在外层 compose 会直接报错
+    # "contains an unknown configuration option: TZ"，整个配置文件加载失败。
+    environment:
+      TZ: Asia/Shanghai
     # 故意不用 depends_on：mysql 是 profile 开关服务，未激活时依赖它会报
     # "service sites-nav depends on service mysql which is defined as a profile
     #  that is not active"。启动顺序交给应用侧处理 —— app.py 的 _init_db
