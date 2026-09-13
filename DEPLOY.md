@@ -112,6 +112,11 @@ MYSQL_DATABASE=sites_nav
 
 **别填 `127.0.0.1`**：sites-nav 跑在容器里，容器自己的 loopback 不是你宿主机的 MySQL。
 
+> `host.docker.internal` 需要 Docker 20.10+。compose 里已配 `extra_hosts: host.docker.internal:host-gateway`
+> 提供这个解析，但 `host-gateway` 这个关键字要 20.10 才支持。CentOS 7 常见的 Docker 19.03
+> 会直接报 `unsupported host value`，把那行改成 `host.docker.internal:172.17.0.1`（默认 bridge 网关）。
+> 查版本：`docker version --format '{{.Server.Version}}'`。
+
 MySQL 侧要确认：`bind-address` 放得进容器过来的连接（不能只绑 `127.0.0.1`），用户授权的 host（`'%'` 或具体网段）包含容器出口 IP。
 
 > `MYSQL_HOST` 不是 `mysql` 时，`bootstrap.sh` / `deploy.sh` **不会**生成 `MYSQL_PASSWORD`——只打印一行提示让你自己填。这是故意的：代填等于拿随机密码去连你的库。
@@ -267,6 +272,8 @@ server {
 | mysql 容器起了但 `root password ... is not set` | `.env` 里 `MYSQL_ROOT_PASSWORD` 是空 | 走 `deploy.sh` / `bootstrap.sh` 会自动生成并写进 `.env`；绕过脚本手敲 `docker compose up` 就会遇到 |
 | 手动 `docker compose exec mysql ...` 报 no such service | mysql 挂在 profile 上，未激活时 compose 看不到 | 命令前加 `COMPOSE_PROFILES=builtin-mysql` |
 | `docker compose ps` 里没有 mysql 但它还在跑 | 切到已有 MySQL 后 mysql 已不在当前配置里，`down` 不带 `--remove-orphans` 不会停它 | `./deploy.sh --stop`（已带该参数），或 `docker compose down --remove-orphans` |
+| `2003` 且 `MYSQL_HOST=host.docker.internal`，日志里是 `Name or service not known` | Linux 上 Docker 不注入该主机名，或版本低于 20.10 不支持 `host-gateway` | `docker version --format '{{.Server.Version}}'`；低于 20.10 把 compose 的 extra_hosts 改成 `host.docker.internal:172.17.0.1` |
+| `docker compose up` 直接报 `unsupported host value host-gateway` | Docker 版本低于 20.10（CentOS 7 的 19.03 常见） | 同上，改成 `host.docker.internal:172.17.0.1`；或升级 Docker |
 | 登录 429 尝试次数过多 | 同一 IP 15 分钟内失败 10 次 | 等 15 分钟；反向代理后记得配 `X-Forwarded-For`，否则全公司共享一个计数 |
 
 ## 本地开发（非 Docker）

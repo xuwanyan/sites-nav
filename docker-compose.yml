@@ -38,6 +38,12 @@ services:
     build: .
     image: sites-nav:latest
     # 不设 container_name：允许同名镜像多实例；需要固定名可手动加
+    # Linux 上 Docker 不会注入 host.docker.internal（macOS/Windows 才会）。
+    # 同一台宿主机装了 MySQL 时 .env 要用 host.docker.internal，没这行会解析失败、
+    # 报 2003 Can't connect to MySQL server。host-gateway 需要 Docker 20.10+；
+    # 更老版本（CentOS 7 常见的 19.03）改成 host.docker.internal:172.17.0.1。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       # 宿主端口可配（.env 里写 PORT=8080 即生效），容器内固定 8000
       - "${PORT:-8000}:8000"
