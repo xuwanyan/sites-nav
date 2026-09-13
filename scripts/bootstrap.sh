@@ -81,7 +81,17 @@ if [ -d "$APP_DIR/.git" ]; then
   # 不用 git -C：老版本 git (< 2.11，CentOS 7 / Alinux 常见) 不支持该选项
   OLD="$(cd "$APP_DIR" && git rev-parse HEAD 2>/dev/null || echo none)"
   (cd "$APP_DIR" && git fetch --tags origin "$BRANCH")
-  NEW="$(cd "$APP_DIR" && git rev-parse "origin/$BRANCH")"
+  # 用 FETCH_HEAD 而不是 origin/$BRANCH：后者依赖 remote.origin.fetch 的 refspec。
+  # 那项缺失时（手动 git init + git remote add 装出来的仓库常见）fetch 只会更新
+  # FETCH_HEAD，origin/$BRANCH 停在旧提交 → OLD 永远等于 NEW → 误报"代码已是最新"，
+  # 每次更新都静默不生效。FETCH_HEAD 由本次 fetch 保证是远端最新。
+  NEW="$(cd "$APP_DIR" && git rev-parse FETCH_HEAD)"
+  TRACKED="$(cd "$APP_DIR" && git rev-parse --verify --quiet "origin/$BRANCH" || echo none)"
+  if [ "$TRACKED" = "none" ] || [ "$TRACKED" != "$NEW" ]; then
+    WARN "origin/$BRANCH 未同步（本地 ${TRACKED:-未设置}，远端 $NEW）"
+    WARN "本仓库 remote.origin.fetch 可能没配 refspec，手动 fetch 的改动不会体现在 origin/ 引用上"
+    WARN "修：cd $APP_DIR && git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' && git fetch origin"
+  fi
   if [ "$OLD" = "$NEW" ]; then
     OK "代码已是最新 ($NEW)"
   else
