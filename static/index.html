@@ -601,6 +601,7 @@
     </div>
     <div class="modal-footer">
       <button class="btn btn-default" onclick="closeSiteModal()">取消</button>
+      <button class="btn btn-default" id="draftClearBtn" onclick="clearSiteDraft()" style="display:none;">清空草稿</button>
       <button class="btn btn-primary" id="saveBtn" onclick="saveSite(this)">保存</button>
     </div>
   </div>
@@ -1360,17 +1361,54 @@ function doExport(format) {
 }
 
 // ==================== 新增/编辑网站 ====================
+// ── 新增表单草稿 ──
+// 关掉弹框（点遮罩 / Esc / 取消）不再丢已填内容：关闭时若处于「新增」模式且有内容，
+// 存成草稿；重新打开「新增资源」时回填。比弹 confirm 强 —— 确认框只能「放弃」或「留下」，
+// 草稿让你关掉再打开接着填。
+// 编辑模式不走草稿：它总是从数据库记录加载，草稿会污染编辑结果，所以 openEditSite 会清掉它。
+let siteDraft = null;
+const _SITE_FIELD_IDS = ["f_name","f_kind_custom","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_probe_codes","f_probe_timeout"];
+
+function _readSiteFields() {
+  const d = {};
+  _SITE_FIELD_IDS.forEach(id => { d[id] = $(id).value; });
+  d.f_kind = $("f_kind").value;
+  d.f_environment = $("f_environment").value;
+  d.f_monitor = $("f_monitor").checked;
+  return d;
+}
+function _applySiteFields(d) {
+  _SITE_FIELD_IDS.forEach(id => { $(id).value = d[id] || ""; });
+  $("f_kind").value = d.f_kind || "网站";
+  $("f_environment").value = d.f_environment || "生产环境";
+  $("f_monitor").checked = !!d.f_monitor;
+}
+function _hasSiteContent() {
+  const d = _readSiteFields();
+  return _SITE_FIELD_IDS.some(id => (d[id] || "").trim() !== "");
+}
+function clearSiteDraft() {
+  siteDraft = null;
+  _applySiteFields({});
+  $("draftClearBtn").style.display = "none";
+  onKindChange();
+  toggleProbeParams();
+  showToast("草稿已清空", "success");
+  setTimeout(() => $("f_name").focus(), 50);
+}
+
 function openSiteModal() {
   $("siteModalTitle").textContent = "新增资源";
   $("editSiteId").value = "";
-  ["f_name","f_kind_custom","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark"].forEach(id => {
-    $(id).value = "";
-  });
-  $("f_kind").value = "网站";
-  $("f_environment").value = "生产环境";
-  $("f_monitor").checked = false;
-  $("f_probe_codes").value = "";
-  $("f_probe_timeout").value = "";
+  _applySiteFields({});
+  // 回填上次没提交的草稿
+  if (siteDraft) {
+    _applySiteFields(siteDraft);
+    $("draftClearBtn").style.display = "";
+    showToast("已恢复上次未提交的内容，可继续填写，或点「清空草稿」", "success");
+  } else {
+    $("draftClearBtn").style.display = "none";
+  }
   onKindChange();
   toggleProbeParams();
   $("siteModal").classList.add("show");
@@ -1380,7 +1418,9 @@ function openSiteModal() {
 function openEditSite(siteId) {
   const s = sites.find(x => x.id === siteId);
   if (!s) { showToast("数据不存在，请刷新页面", "error"); return; }
+  siteDraft = null;   // 编辑始终从记录加载，不能拿新增草稿顶上来
   $("siteModalTitle").textContent = "编辑资源";
+  $("draftClearBtn").style.display = "none";
   $("editSiteId").value = s.id;
   $("f_name").value = s.name || "";
   $("f_category").value = s.category || "";
@@ -1409,6 +1449,8 @@ function openEditSite(siteId) {
 }
 
 function closeSiteModal() {
+  // 新增模式下有内容就存草稿，下次打开接着填；编辑模式不存（内容由记录决定）
+  if (!$("editSiteId").value && _hasSiteContent()) siteDraft = _readSiteFields();
   $("siteModal").classList.remove("show");
 }
 
@@ -1455,6 +1497,10 @@ async function saveSite(btn) {
       await api("/api/sites", { method: "POST", body: JSON.stringify(data) });
       showToast("新增成功", "success");
     }
+    // 已落库：清草稿并重置表单。必须先重置再 closeSiteModal ——
+    // closeSiteModal 在「新增模式 + 表单有内容」时会存草稿，顺序反了会把刚保存的内容又存成草稿
+    siteDraft = null;
+    _applySiteFields({});
     closeSiteModal();
     await loadSites();
   } catch (e) {
@@ -1773,12 +1819,15 @@ async function deleteUser(id, username) {
 // 注意误关本身只是隐藏（display:none），值还留在 DOM 里；
 // 真正清掉是 openSiteModal() 重开时 reset 所有字段 —— 所以这里拦的是"重开后才发现没了"。
 // 其它弹框内容少、且危险操作本来就有各自的 confirm，照旧直接关。
-const _DRAFT_MODALS = ["siteModal", "importModal"];
+const _DRAFT_MODALS = ["importModal"];
 function _modalHasDraft(m) {
   return [...m.querySelectorAll("input[type=text], input[type=password], input:not([type]), textarea")]
     .some(i => i.value.trim() !== "");
 }
 function _closeModal(m) {
+  // 资源弹框走 closeSiteModal()，这样点遮罩 / Esc 关闭时也会把内容存成草稿
+  if (m.id === "siteModal") { closeSiteModal(); return; }
+  // 批量导入粘的是整段 CSV/JSON，恢复成本高，保留确认框
   if (_DRAFT_MODALS.includes(m.id) && _modalHasDraft(m) && !confirm("弹框里还有未保存的内容，确定放弃吗？")) return;
   m.classList.remove("show");
 }
