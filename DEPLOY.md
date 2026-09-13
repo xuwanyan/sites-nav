@@ -1,6 +1,7 @@
 # 部署指南
 
-服务器上一条命令拉代码 + 构建镜像 + 启动 + 探活，可重复执行。
+服务器上两步跑起来：`bootstrap.sh` 拉代码 + 建镜像 + 配 `.env`（**不启动**），
+确认 `.env` 无误后 `deploy.sh --deploy` 启动 + 探活。可重复执行。
 
 ## 先选一种：MySQL 放哪
 
@@ -19,13 +20,24 @@
 ## 一键部署
 
 ```bash
+# 第 1 步：准备（拉代码 / 建镜像 / 生成 .env），不会启动任何东西
 curl -fsSL https://raw.githubusercontent.com/xuwanyan/sites-nav/main/scripts/bootstrap.sh -o /tmp/bootstrap.sh
 sudo bash /tmp/bootstrap.sh
+
+# 第 2 步：确认 .env 里的 MYSQL_* / ADMIN_PASSWORD 是你要的值，然后启动
+cd /opt/sites-nav
+sudo ./deploy.sh --deploy
 ```
 
-首次和以后每次部署都是这一条。脚本幂等：已克隆就 `git fetch` 更新，没有就 `git clone`；`.env` 和 `data/` 被 gitignore，git 操作不会动到它们。
+`bootstrap.sh` 幂等：已克隆就 `git fetch` 更新，没有就 `git clone`；`.env` 和 `data/` 被 gitignore，git 操作不会动到它们。默认装到 `/opt/sites-nav`，监听 `8000`。
 
-默认装到 `/opt/sites-nav`，监听 `8000`。
+**第 1 步故意不启动**，是为了让你有一个改 `.env` 的窗口。脚本会替你生成 `.env` 和随机密码，但它猜不到你要连哪台 MySQL —— 上一次部署留下的 `.env` 里 `MYSQL_HOST=mysql` 会让应用静默连到 compose 内置的空容器上。准备完脚本会打印当前解析出的 MySQL 模式和下一步命令。
+
+已经配好 `.env`、只想更新代码并重启时，一步到位：
+
+```bash
+sudo bash /tmp/bootstrap.sh --deploy
+```
 
 ## 自定义
 
@@ -42,6 +54,14 @@ sudo bash /tmp/bootstrap.sh /data/sites-nav v1.2     # 自定义分支或标签
 export APP_DIR=/data/sites-nav && sudo -E bash /tmp/bootstrap.sh
 ```
 
+想改**默认**路径又不想每次敲参数，用 `DEFAULT_APP_DIR`：
+
+```bash
+echo 'export DEFAULT_APP_DIR=/data/sites-nav' >> ~/.bashrc
+```
+
+安装目录优先级：位置参数 > `APP_DIR` > `DEFAULT_APP_DIR` > `/opt/sites-nav`。
+
 ### 端口
 
 改宿主机映射端口：编辑 `<安装目录>/.env`，加一行
@@ -50,7 +70,7 @@ export APP_DIR=/data/sites-nav && sudo -E bash /tmp/bootstrap.sh
 PORT=8080
 ```
 
-容器内固定 8000（Dockerfile 的 CMD 绑 8000），改的是宿主机映射。compose 的 `${PORT:-8000}:8000`、`deploy.sh` 的端口检查、`bootstrap.sh` 的端口冲突判断三边都从同一处读，不会出现"检查的端口和实际绑定的端口不一致"。
+容器内固定 8000（Dockerfile 的 CMD 绑 8000），改的是宿主机映射。compose 的 `${PORT:-8000}:8000` 和 `deploy.sh` 的 `check_port` 从同一处读（shell 变量 > `.env` > 8000），不会出现"检查的端口和实际绑定的端口不一致"。`bootstrap.sh` 也会解析同一个值，仅用于收尾时提示。
 
 ### 自定义目录的两个坑
 
@@ -62,7 +82,7 @@ PORT=8080
    cp -a /opt/sites-nav/.env /root/sites-nav/.env        # 密码
    cp -a /opt/sites-nav/data/. /root/sites-nav/data/     # 数据
    cd /opt/sites-nav && docker compose down               # 停旧容器，腾端口
-   sudo bash /tmp/bootstrap.sh /root/sites-nav
+   sudo bash /tmp/bootstrap.sh --deploy /root/sites-nav  # 准备 + 部署
    rm -rf /opt/sites-nav                                  # 新环境正常后再删
    ```
 
@@ -189,16 +209,17 @@ docker run --rm -e MYSQL_PWD='<密码>' mysql:8.0 \
 ## 升级
 
 ```bash
-sudo bash /tmp/bootstrap.sh          # 重新拉最新代码 + 重建镜像 + 重启
+sudo bash /tmp/bootstrap.sh --deploy   # 拉最新代码 + 重建镜像 + 重启 + 探活
 ```
+
+`--deploy` 是必需的：bootstrap 默认只准备、不启动。`.env` 没改的话一条命令就够。
 
 或手动：
 
 ```bash
 cd /opt/sites-nav
 git fetch origin main && git checkout -B main origin/main
-docker compose build
-docker compose up -d
+docker compose up -d --build
 ```
 
 ## 备份

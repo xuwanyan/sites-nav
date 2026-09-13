@@ -5,9 +5,18 @@ set -euo pipefail
 # sites-nav 服务器引导：拉取代码 → 构建镜像 → 启动 → 探活
 #
 # 用法:
-#   sudo bash scripts/bootstrap.sh                     # 首次部署 / 重新部署
+#   sudo bash scripts/bootstrap.sh                     # 只准备（拉代码/建镜像/配 .env），不启动
+#   sudo bash scripts/bootstrap.sh --deploy            # 准备后接着部署（已配好 .env 时用）
 #   sudo bash scripts/bootstrap.sh /data/sites-nav     # 指定安装目录
 #   sudo bash scripts/bootstrap.sh /data/sites-nav v1.2 # 指定分支或标签
+#   sudo bash scripts/bootstrap.sh --deploy /data/sites-nav
+#
+# 安装目录优先级：位置参数 > APP_DIR 环境变量 > DEFAULT_APP_DIR > /opt/sites-nav。
+# 想改默认路径又不想每次敲：export DEFAULT_APP_DIR=/data/sites-nav 写到 profile 里。
+#
+# 默认不启动是有意的：用户常常还要改 .env（MYSQL_* / ADMIN_PASSWORD / PORT），
+# 脚本替用户决定"连哪台 MySQL"很容易出事 —— 陈旧 .env 里的 MYSQL_HOST=mysql
+# 会静默把连接指到 compose 内置的空容器上。准备完只打印下一步命令。
 #
 # 参数用位置传入，不用环境变量 —— sudo 会过滤环境，APP_DIR=x sudo bash
 # 这种写法变量会静默丢失（除非加 -E）。偏要用环境变量的话：
@@ -22,9 +31,22 @@ set -euo pipefail
 # ═════════════════════════════════════════════════════════════════
 
 REPO_URL="${REPO_URL:-https://github.com/xuwanyan/sites-nav.git}"
-# APP_DIR / BRANCH 取位置参数，环境变量兜底（位置参数能穿过 sudo）
-APP_DIR="${1:-${APP_DIR:-/opt/sites-nav}}"
-BRANCH="${2:-${BRANCH:-main}}"
+# APP_DIR / BRANCH 取位置参数，环境变量兜底（位置参数能穿过 sudo）。
+# --deploy 是开关：跑完准备后接着部署。不传则只准备、不启动。
+_ENV_APP_DIR="${APP_DIR:-}"
+_ENV_BRANCH="${BRANCH:-}"
+DO_DEPLOY=0
+_ARGS=()
+for _a in "$@"; do
+  case "$_a" in
+    --deploy) DO_DEPLOY=1 ;;
+    *) _ARGS+=("$_a") ;;
+  esac
+done
+# 安装目录优先级：位置参数 > APP_DIR 环境变量 > DEFAULT_APP_DIR > /opt/sites-nav
+# DEFAULT_APP_DIR 让「默认路径」本身也可配：不想每次敲路径就在 profile 里 export 一次。
+APP_DIR="${_ARGS[0]:-${_ENV_APP_DIR:-${DEFAULT_APP_DIR:-/opt/sites-nav}}}"
+BRANCH="${_ARGS[1]:-${_ENV_BRANCH:-main}}"
 IMAGE="${IMAGE:-}"
 
 NEW_PASS=""
@@ -179,7 +201,7 @@ else
   fi
 fi
 
-# ── 5. 端口冲突处理 ─────────────────────────────────────────────
+# ── 5. 端口（只读，用于下面提示；本脚本不动任何正在跑的东西）────
 # PORT：shell 变量 > .env 里的 PORT > 默认 8000，与 docker-compose.yml 的 ${PORT:-8000} 同源
 # .env 没有 PORT 行时 grep 返回 1，本文件是 set -euo pipefail，
 # 写成 PORT="${PORT:-$(grep ...)}" 会让赋值整体失败 → 脚本静默退出一行不输出。
@@ -189,14 +211,45 @@ if [ -z "$PORT" ]; then
 fi
 PORT="${PORT:-8000}"
 export PORT
-# 只清自己项目占的端口；被无关进程占用时留给 deploy.sh 报清楚，不替用户杀进程
-if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${PORT}$" && [ -n "$(docker compose ps -q 2>/dev/null)" ]; then
-  WARN "端口 $PORT 被现有容器占用，先停止旧容器"
-  # --remove-orphans：切换部署方式后不在当前配置里的 mysql 容器也要一起停
-  docker compose down --remove-orphans
+# 注意这里**不**清端口、不 down 任何容器：bootstrap 只准备，停止/启动一律走 deploy.sh。
+# 端口冲突由 deploy.sh 的 check_port 报清楚（它只报错，不杀任何进程）。
+
+# ── 6. 收尾 ─────────────────────────────────────────────────────
+# 默认只准备不启动：给用户一个改 .env 的窗口。传 --deploy 才接着部署，
+# 给已经配好 .env 的重复部署 / 升级用。
+if [ "$DO_DEPLOY" = 1 ]; then
+  LOG "启动"
+  exec ./deploy.sh --deploy
 fi
 
-# ── 6. 启动 + 探活 ──────────────────────────────────────────────
-# 密码/端口/健康检查/占位符拦截都交给项目自带的 deploy.sh，不重复实现
-LOG "启动"
-exec ./deploy.sh --deploy
+PW="$(sed -n 's/^MYSQL_PASSWORD=//p' .env | head -1)"
+if [ -n "$PW" ]; then PW_NOTE="已填写"
+else PW_NOTE="空 ← 内置模式已自动生成；外部模式需要你自己填，不填应用会报 1045"; fi
+if [ "$MYSQL_HOST_VAL" = "mysql" ]; then
+  MODE_NOTE="内置（会启动 compose 里的 mysql 容器）"
+else
+  MODE_NOTE="外部（不启动内置 mysql 容器）"
+fi
+
+cat <<EOF
+
+$(printf '\033[1;32m✔\033[0m') 准备完成，但**服务还没启动**
+
+  代码目录      $APP_DIR
+  镜像          $IMAGE
+  监听端口      $PORT
+  MySQL 模式    $MODE_NOTE
+  MYSQL_HOST    $MYSQL_HOST_VAL
+  MYSQL_PASSWORD  $PW_NOTE
+
+$(printf '\033[1;33m⚠\033[0m')  确认 .env 里 MYSQL_HOST / MYSQL_PASSWORD 是你要的值，再启动。
+  最常见的错：.env 是上一次部署留下的，MYSQL_HOST 还指向内置容器，
+  于是应用拿那个库的密码去连你的库 → 1045。
+
+  下一步：
+    cd $APP_DIR && sudo ./deploy.sh --deploy
+
+  以后升级（.env 已配好，一条命令）：
+    sudo bash /tmp/bootstrap.sh --deploy
+$(printf '─────────────────────────────────────────────────────────────')
+EOF

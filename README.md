@@ -38,7 +38,7 @@ docker compose up -d --build
 
 浏览器访问 `http://<服务器IP>:8000`，登录入口在 **`/admin`**（首页故意不显示登录入口）。
 
-> 服务器一键部署（拉代码 + 构建镜像 + 启动 + 探活，一条命令）见 [DEPLOY.md](DEPLOY.md)。
+> 服务器部署见 [DEPLOY.md](DEPLOY.md)：`bootstrap.sh` 拉代码 + 构建 + 配 `.env`（默认不启动），确认 `.env` 后 `./deploy.sh --deploy` 启动 + 探活。
 
 > **⚠️ 首次启动**：`ADMIN_PASSWORD` 只用于种子第一个 admin 账号，之后用户全部在后台「👤 用户管理」里维护。
 > 留空则自动生成随机强密码并在启动日志打印**一次**（`docker compose logs sites-nav`），务必立即保存或改成自己的密码。
@@ -48,7 +48,7 @@ docker compose up -d --build
 
 | 脚本 | 用途 | 绑定地址 |
 |---|---|---|
-| `scripts/bootstrap.sh` | 服务器一键部署（拉代码 + 构建 + 启动 + 探活） | 容器 `0.0.0.0:8000` |
+| `scripts/bootstrap.sh` | 服务器准备（拉代码 + 构建 + 配 `.env`），默认不启动；加 `--deploy` 接着启动 | 容器 `0.0.0.0:8000` |
 | `deploy.sh` | 本地已克隆后的运维（部署 / 更新 / 停止 / 状态） | 容器 `0.0.0.0:8000` |
 | `start.bat` | Windows 本地开发（调 `run.py`，热重载） | `127.0.0.1:8000` |
 | `run.py` | 跨平台本地开发（带 `--reload` 热重载） | `127.0.0.1:8000`（可 `HOST=0.0.0.0` 覆盖） |
