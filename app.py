@@ -634,6 +634,11 @@ _monitor_session_lock = threading.Lock()
 _monitor_session: requests.Session | None = None
 
 
+class MonitorAuthError(RuntimeError):
+    """拨测管理端账密不匹配（admin 返回 302 但未下发 ccsid cookie）。
+    独立异常类型而非靠匹配错误消息文本：文案改了分类不会静默失效。"""
+
+
 def _monitor_enabled() -> bool:
     return bool(CATEGRAF_ADMIN_URL and CATEGRAF_ADMIN_PASS)
 
@@ -740,10 +745,58 @@ def _monitor_login() -> requests.Session:
         if r.status_code == 405:
             _monitor_session = sess
             return sess
-        if r.status_code != 302 or "ccsid" not in sess.cookies:
-            raise RuntimeError(f"拨测管理端登录失败(HTTP {r.status_code})")
-        _monitor_session = sess
-        return sess
+        # 成功只有一种形态：302 且下发了 ccsid cookie。
+        # 账密错时 admin 同样返回 302（跳 /login?error=1）但不发 cookie，
+        # 所以必须看 cookie 而非状态码 —— 只报「HTTP 302」会让人以为 302 代表成功。
+        if r.status_code == 302 and "ccsid" in sess.cookies:
+            _monitor_session = sess
+            return sess
+        if r.status_code == 302:
+            raise MonitorAuthError(
+                "拨测管理端账密错误：admin 返回 302 但未下发 ccsid cookie，"
+                "请核对 .env 的 CATEGRAF_ADMIN_PASS 是否等于 admin 的 CONFIG_PASS"
+            )
+        raise RuntimeError(f"拨测管理端登录异常(HTTP {r.status_code})，请检查 CATEGRAF_ADMIN_URL 是否可达")
+
+
+# 拨测管理端探测结果缓存（30s TTL）：/api/monitor-config 每次页面加载都会调，
+# 直接探测等于高频打 admin 的 /login（它会把每次尝试写进日志）；
+# 对 UI 提示而言 30s 内的状态已经足够新鲜，admin 宕机也不会被探活打爆。
+_MONITOR_STATE_TTL = 30.0
+_monitor_state_cache = {"state": "", "detail": "", "at": 0.0}
+
+
+def _monitor_state(force: bool = False) -> tuple[str, str]:
+    """拨测管理端状态：返回 (state, detail)。
+
+    state 取值：
+      off         —— env 未配齐（URL 或 PASS 为空）
+      ok          —— 配齐且登录通过
+      unreachable —— 配齐但连不上 / 服务端异常
+      auth_failed —— 配齐但账密不匹配
+
+    未配置时不探测（没配置没必要去打 admin）。已持有 session 时 _monitor_login
+    直接返回缓存会话，探测开销为零 —— 代价是 admin 事后宕机探测不出来，
+    那种失败会落到卡片的同步状态里，同样可见。
+    """
+    if not _monitor_enabled():
+        return "off", "缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS"
+    now = time.time()
+    if not force and _monitor_state_cache["state"] and now - _monitor_state_cache["at"] < _MONITOR_STATE_TTL:
+        return _monitor_state_cache["state"], _monitor_state_cache["detail"]
+    try:
+        _monitor_login()
+        state, detail = "ok", ""
+    except MonitorAuthError as exc:
+        state, detail = "auth_failed", str(exc)
+    except requests.RequestException as exc:
+        state, detail = "unreachable", f"拨测管理端不可达：{exc}"
+    except RuntimeError as exc:
+        state, detail = "unreachable", str(exc)
+    except Exception as exc:  # noqa: BLE001 探测失败不该让配置接口整体 500
+        state, detail = "unreachable", f"拨测管理端探测异常：{exc}"
+    _monitor_state_cache.update({"state": state, "detail": detail, "at": now})
+    return state, detail
 
 
 def _pick_probe_url(site: dict) -> str:
@@ -1142,13 +1195,19 @@ def monitor_status(authorization: str | None = Header(default=None)):
 
 @app.get("/api/monitor-config")
 def monitor_config(authorization: str | None = Header(default=None)):
-    """拨测联动是否已配置。前端据此把「加入监控」置灰 ——
+    """拨测联动状态。前端据此把「加入监控」置灰并给出对应提示 ——
     后端未配置时会拒绝 monitor=true（见 _validate_site_payload），
-    所以前端必须提前禁用，否则用户点了才知道失败，还容易留下脏状态。"""
+    所以前端必须提前禁用，否则用户点了才知道失败，还容易留下脏状态。
+
+    enabled 是 gate（env 是否配齐），state 是诊断（配齐了能不能用）。
+    两者刻意分开：admin 短暂不可用时不拦写入，失败会显示在卡片的同步状态里，
+    不会把「加不了拨测」误报成「未配置」。"""
     _require_user(authorization)
+    state, detail = _monitor_state()
     return {
         "enabled": _monitor_enabled(),
-        "reason": "" if _monitor_enabled() else "缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS",
+        "state": state,
+        "reason": "缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS" if state == "off" else detail,
     }
 
 

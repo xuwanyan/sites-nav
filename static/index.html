@@ -774,7 +774,25 @@ let probeStatusMap = {};
 // false 时「加入监控」置灰不可点 —— 后端会拒绝 monitor=true，
 // 提前禁用可避免用户点了才知道失败。
 let monitorEnabled = false;
-const MONITOR_OFF_TIP = "拨测联动未配置（缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS），请先在 .env 配好并重启容器";
+// monitorState：unknown=还没拉到配置 / off=未配置 / unreachable=连不上管理端 / auth_failed=账密错 / ok=可用。
+// enabled 只看 env 是否配齐（与后端 /api/monitor-config 的 enabled 同义），state 额外说明
+// 「配了但用不了」的原因。两者分开，避免把「没探到」显示成「未配置」——
+// 之前配置接口 5xx 一次，按钮就永久显示未配置，能配好的环境被误判。
+let monitorState = "unknown";
+const MONITOR_TIPS = {
+  unknown: "拨测联动状态未确认（配置接口未返回），刷新页面重试",
+  off: "拨测联动未配置（缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS），请先在 .env 配好并重启容器",
+  unreachable: "拨测管理端不可达，请检查 .env 的 CATEGRAF_ADMIN_URL 与 categraf-http-admin 的 HOST/端口",
+  auth_failed: "拨测管理端账密错误，请核对 .env 的 CATEGRAF_ADMIN_PASS 是否等于 admin 的 CONFIG_PASS",
+};
+const MONITOR_LABELS = {
+  unknown: "拨测状态未知",
+  off: "拨测未配置",
+  unreachable: "拨测不可达",
+  auth_failed: "拨测账密错",
+};
+function monitorTip() { return MONITOR_TIPS[monitorState] || MONITOR_TIPS.unknown; }
+function monitorLabel() { return MONITOR_LABELS[monitorState] || MONITOR_LABELS.unknown; }
 
 // 资源类型元数据：预设类型带图标和颜色，自定义类型走哈希兜底
 const KIND_META = {
@@ -857,15 +875,20 @@ async function loadSites() {
 
 // 拉取拨测同步状态，更新卡片上的 📡 图标（延迟几次以覆盖后台同步完成）
 async function refreshProbeStatus(retry = 2) {
+  // 两个接口独立拉取。之前用 Promise.all，任一 5xx/401 会把两个一起吞掉，
+  // monitorEnabled 停在初始 false，整页显示「未配置」，而且 catch 里什么都没说
   try {
-    const [status, cfg] = await Promise.all([
-      api("/api/monitor-status"),
-      api("/api/monitor-config"),
-    ]);
-    probeStatusMap = status;
+    probeStatusMap = await api("/api/monitor-status");
+  } catch (e) { console.warn("拉取拨测同步状态失败", e); }
+  try {
+    const cfg = await api("/api/monitor-config");
     monitorEnabled = !!cfg.enabled;
-    updateMonitorBtn();   // 联动不可用时把表单里的复选框一起禁用
-  } catch (e) { return; }
+    monitorState = cfg.state || (monitorEnabled ? "ok" : "off");
+  } catch (e) {
+    console.warn("拉取拨测配置失败，联动状态按未知处理", e);
+    monitorState = "unknown";
+  }
+  updateMonitorBtn();   // 联动不可用时把表单里的复选框一起禁用
   Object.entries(probeStatusMap).forEach(([id, st]) => {
     const el = document.getElementById("probe-" + id);
     if (!el) return;
@@ -1051,7 +1074,7 @@ function hasAnyUrl(s) {
 // 拨测状态徽标。联动未配置时不能显示「已监控」——
 // 那种站点根本没有拨测任务，标记是上一次留下的脏状态，显示已监控会误导人。
 function probeBadge(s) {
-  if (!monitorEnabled) return `<span class="env-tag env-off" title="${escapeAttr(MONITOR_OFF_TIP)}">拨测未配置</span>`;
+  if (!monitorEnabled) return `<span class="env-tag env-off" title="${escapeAttr(monitorTip())}">${monitorLabel()}</span>`;
   return s.monitor
     ? `<span class="env-tag env-probe" title="${escapeAttr(probeTitle(s))}" id="probe-${escapeAttr(s.id)}">已监控</span>`
     : `<span class="env-tag env-off">未加入监控</span>`;
@@ -1067,7 +1090,7 @@ function monitorBtn(s) {
   }
   if (!monitorEnabled) {
     // 置灰不可点，而不是点了报 400。后端也会拒绝 monitor=true，这里是先于后端拦住。
-    return `<button class="btn btn-default btn-sm" disabled title="${escapeAttr(MONITOR_OFF_TIP)}">📡 加入监控</button>`;
+    return `<button class="btn btn-default btn-sm" disabled title="${escapeAttr(monitorTip())}">📡 加入监控</button>`;
   }
   return `<button class="btn btn-default btn-sm" onclick="openProbeModal('${escapeAttr(s.id)}')">📡 加入监控</button>`;
 }
@@ -1128,7 +1151,7 @@ function envCol(env, entrySites) {
       <span style="display:flex; align-items:center; gap:10px;">
         ${entrySites.filter(s => s.monitor).map(s => monitorEnabled
           ? `<span class="env-tag env-probe" id="probe-${escapeAttr(s.id)}" title="${escapeAttr(probeTitle(s))}" style="font-size:11px">📡 已监控</span>`
-          : `<span class="env-tag env-off" title="${escapeAttr(MONITOR_OFF_TIP)}" style="font-size:11px">拨测未配置</span>`).join("")}
+          : `<span class="env-tag env-off" title="${escapeAttr(monitorTip())}" style="font-size:11px">${monitorLabel()}</span>`).join("")}
         ${isAdmin() ? entrySites.map(s => monitorBtn(s)).join("") : ""}
         ${isAdmin() ? entrySites.map(s => `<button class="btn btn-default btn-sm" onclick="openEditSite('${escapeAttr(s.id)}')">✏️ 编辑</button>`).join("") : ""}
         ${isAdmin() ? entrySites.map(s => `<button class="btn btn-danger btn-sm" onclick="openDeleteModal('${escapeAttr(s.id)}','${escapeAttr(s.name)}','${escapeAttr(env)}')">🗑️ 删除</button>`).join("") : ""}
@@ -1543,10 +1566,10 @@ function updateMonitorBtn() {
   const isConnOnly = (preset !== "" && preset !== "网站"); // 缓存/MQ/数据库/存储
   const monitorCb = $("f_monitor");
   const paramsRow = $("probeParamsRow");
-  // 提示文案随联动状态切换（monitorEnabled 由 refreshProbeStatus 拉取后调用本函数更新）
+  // 提示文案随联动状态切换（monitorEnabled / monitorState 由 refreshProbeStatus 拉取后调用本函数更新）
   $("monitorHint").textContent = monitorEnabled
     ? "仅当填了 URL 地址（域名/公网/内网）时可用；连接串形式的资源不支持拨测"
-    : MONITOR_OFF_TIP;
+    : monitorTip();
   if (!monitorEnabled) {
     // 联动未配置：整个拨测选项不可用，后端也会拒绝，这里先拦住
     monitorCb.checked = false;

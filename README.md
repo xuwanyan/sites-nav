@@ -140,6 +140,23 @@ COMPOSE_PROFILES=builtin-mysql docker compose exec -T mysql sh -c \
 
 需先配置 `CATEGRAF_ADMIN_URL` 与 `CATEGRAF_ADMIN_PASS`（见环境变量表），否则联动关闭。
 
+`/api/monitor-config` 返回 `state`，用于区分「配了但用不了」的几种情况（前端据此显示不同提示）：
+
+| state | 含义 |
+| --- | --- |
+| `off` | env 未配齐（URL 或 PASS 为空），联动关闭 |
+| `ok` | 配齐且登录管理端成功 |
+| `unreachable` | 配齐但连不上 / 管理端异常 |
+| `auth_failed` | 配齐但账密不匹配（`.env` 的 `CATEGRAF_ADMIN_PASS` ≠ 管理端的 `CONFIG_PASS`） |
+
+> 探测结果按 30s TTL 缓存，不会高频打管理端的 `/login`。
+
+**改 `.env` 后必须重建容器**：`CATEGRAF_ADMIN_*` 等变量在进程启动时一次性读入，`docker compose restart` 复用容器原有环境、**不会重读 `.env`**。要生效得用：
+
+```bash
+docker compose up -d --force-recreate
+```
+
 ## 升级
 
 ```bash
