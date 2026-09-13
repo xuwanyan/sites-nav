@@ -112,6 +112,12 @@ MYSQL_DATABASE=sites_nav
 
 **别填 `127.0.0.1`**：sites-nav 跑在容器里，容器自己的 loopback 不是你宿主机的 MySQL。
 
+> ⚠️ **`mysql` 是开关值，不是主机名。** 你的外部 MySQL 是容器、而且容器名就叫 `mysql`
+> （Nightingale 等监控栈的默认配置就是这样），也**不要填 `mysql`**：这个值会让脚本
+> 认为你在用内置库，从而①额外拉起一个空 mysql 容器，②自动生成随机 `MYSQL_PASSWORD`
+> 写进 `.env` 覆盖你的真密码 → `1045 Access denied`。外部库一律填真实地址，
+> 同机的填 `host.docker.internal`。
+
 > `host.docker.internal` 需要 Docker 20.10+。compose 里已配 `extra_hosts: host.docker.internal:host-gateway`
 > 提供这个解析，但 `host-gateway` 这个关键字要 20.10 才支持。CentOS 7 常见的 Docker 19.03
 > 会直接报 `unsupported host value`，把那行改成 `host.docker.internal:172.17.0.1`（默认 bridge 网关）。
