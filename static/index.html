@@ -1725,11 +1725,30 @@ async function deleteUser(id, username) {
   } catch (e) { showToast(e.message, "error"); }
 }
 
+// ── 弹框关闭：点遮罩 + Esc 两个入口 ──
+// 录入型弹框（新增/编辑资源、批量导入）已填内容时先确认。这两个入口都很容易误触：
+// 打完字顺手一点就点中遮罩；Esc 更是不知道按了什么就没了。
+// 注意误关本身只是隐藏（display:none），值还留在 DOM 里；
+// 真正清掉是 openSiteModal() 重开时 reset 所有字段 —— 所以这里拦的是"重开后才发现没了"。
+// 其它弹框内容少、且危险操作本来就有各自的 confirm，照旧直接关。
+const _DRAFT_MODALS = ["siteModal", "importModal"];
+function _modalHasDraft(m) {
+  return [...m.querySelectorAll("input[type=text], input[type=password], input:not([type]), textarea")]
+    .some(i => i.value.trim() !== "");
+}
+function _closeModal(m) {
+  if (_DRAFT_MODALS.includes(m.id) && _modalHasDraft(m) && !confirm("弹框里还有未保存的内容，确定放弃吗？")) return;
+  m.classList.remove("show");
+}
 document.querySelectorAll(".modal-overlay").forEach(m => {
-  m.addEventListener("click", e => { if (e.target === m) m.classList.remove("show"); });
+  m.addEventListener("click", e => { if (e.target === m) _closeModal(m); });
 });
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape") document.querySelectorAll(".modal-overlay.show").forEach(m => m.classList.remove("show"));
+  if (e.key !== "Escape") return;
+  // 只关最上面那个。弹框 z-index 都一样，后写进 DOM 的在上层；
+  // 原来一次关全部，外面开着用户管理、里面开着资源弹框时一次 Esc 两个都没了。
+  const open = [...document.querySelectorAll(".modal-overlay.show")];
+  if (open.length) _closeModal(open[open.length - 1]);
 });
 </script>
 </body>
