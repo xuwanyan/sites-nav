@@ -148,8 +148,11 @@ COMPOSE_PROFILES=builtin-mysql docker compose exec -T mysql sh -c \
 | `ok` | 配齐且登录管理端成功 |
 | `unreachable` | 配齐但连不上 / 管理端异常 |
 | `auth_failed` | 配齐但账密不匹配（`.env` 的 `CATEGRAF_ADMIN_PASS` ≠ 管理端的 `CONFIG_PASS`） |
+| `unknown` | 还没探到 —— 刚重启、探测尚未完成，或配置接口本身失败。等几秒刷新即可 |
 
-> 探测结果按 30s TTL 缓存，不会高频打管理端的 `/login`。
+> 探测在后台线程执行，30s TTL 缓存。这个接口每次页面加载都会调，
+> 所以它必须瞬时返回：探测本身要真发一次 `POST /login`，
+> 放在请求路径上会让冷启动的页面加载最多阻塞 ~10s。
 
 **改 `.env` 后必须重建容器**：`CATEGRAF_ADMIN_*` 等变量在进程启动时一次性读入，`docker compose restart` 复用容器原有环境、**不会重读 `.env`**。要生效得用：
 

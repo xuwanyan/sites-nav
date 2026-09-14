@@ -759,15 +759,18 @@ def _monitor_login() -> requests.Session:
         raise RuntimeError(f"拨测管理端登录异常(HTTP {r.status_code})，请检查 CATEGRAF_ADMIN_URL 是否可达")
 
 
-# 拨测管理端探测结果缓存（30s TTL）：/api/monitor-config 每次页面加载都会调，
-# 直接探测等于高频打 admin 的 /login（它会把每次尝试写进日志）；
-# 对 UI 提示而言 30s 内的状态已经足够新鲜，admin 宕机也不会被探活打爆。
+# 拨测管理端探测结果缓存（30s TTL）+ 后台探测。
+# /api/monitor-config 每次页面加载都会调，所以它必须瞬时返回；真发探测
+# （要向 admin POST 一次 /login，timeout=5 含建连+读取，最坏 ~10s）放后台线程，
+# 接口只回最后已知状态。探测结果本身对 UI 提示而言 30s 足够新鲜。
 _MONITOR_STATE_TTL = 30.0
 _monitor_state_cache = {"state": "", "detail": "", "at": 0.0}
+_monitor_probe_inflight = False
+_monitor_probe_guard = threading.Lock()
 
 
-def _monitor_state(force: bool = False) -> tuple[str, str]:
-    """拨测管理端状态：返回 (state, detail)。
+def _probe_monitor_state() -> None:
+    """向 admin 发一次登录探测，结果写入 _monitor_state_cache。仅由后台线程调用。
 
     state 取值：
       off         —— env 未配齐（URL 或 PASS 为空）
@@ -780,10 +783,10 @@ def _monitor_state(force: bool = False) -> tuple[str, str]:
     那种失败会落到卡片的同步状态里，同样可见。
     """
     if not _monitor_enabled():
-        return "off", "缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS"
-    now = time.time()
-    if not force and _monitor_state_cache["state"] and now - _monitor_state_cache["at"] < _MONITOR_STATE_TTL:
-        return _monitor_state_cache["state"], _monitor_state_cache["detail"]
+        _monitor_state_cache.update(
+            {"state": "off", "detail": "缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS", "at": time.time()}
+        )
+        return
     try:
         _monitor_login()
         state, detail = "ok", ""
@@ -795,8 +798,26 @@ def _monitor_state(force: bool = False) -> tuple[str, str]:
         state, detail = "unreachable", str(exc)
     except Exception as exc:  # noqa: BLE001 探测失败不该让配置接口整体 500
         state, detail = "unreachable", f"拨测管理端探测异常：{exc}"
-    _monitor_state_cache.update({"state": state, "detail": detail, "at": now})
-    return state, detail
+    _monitor_state_cache.update({"state": state, "detail": detail, "at": time.time()})
+
+
+def _schedule_monitor_probe() -> None:
+    """缓存过期或缺失时触发后台探测。已有探测在跑就不重复起线程。"""
+    global _monitor_probe_inflight
+    with _monitor_probe_guard:
+        if _monitor_probe_inflight:
+            return
+        _monitor_probe_inflight = True
+
+    def _run():
+        global _monitor_probe_inflight
+        try:
+            _probe_monitor_state()
+        finally:
+            with _monitor_probe_guard:
+                _monitor_probe_inflight = False
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _pick_probe_url(site: dict) -> str:
@@ -1201,14 +1222,20 @@ def monitor_config(authorization: str | None = Header(default=None)):
 
     enabled 是 gate（env 是否配齐），state 是诊断（配齐了能不能用）。
     两者刻意分开：admin 短暂不可用时不拦写入，失败会显示在卡片的同步状态里，
-    不会把「加不了拨测」误报成「未配置」。"""
+    不会把「加不了拨测」误报成「未配置」。
+
+    本接口不阻塞在探测上：state 回最后已知值，缓存过期才在后台起探测。
+    冷启动时 state 为 unknown —— 前端几秒后重试会拿到真实状态。
+    之前在这里同步探测，冷缓存最坏拖 ~10s，页面表现为「加入监控」一直灰着、
+    提示停在「状态未确认」，被当成配置错误排查了一整轮。"""
     _require_user(authorization)
-    state, detail = _monitor_state()
-    return {
-        "enabled": _monitor_enabled(),
-        "state": state,
-        "reason": "缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS" if state == "off" else detail,
-    }
+    if not _monitor_enabled():
+        return {"enabled": False, "state": "off", "reason": "缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS"}
+    cache = _monitor_state_cache
+    stale = not cache["state"] or time.time() - cache["at"] >= _MONITOR_STATE_TTL
+    if stale:
+        _schedule_monitor_probe()
+    return {"enabled": True, "state": cache["state"] or "unknown", "reason": cache["detail"]}
 
 
 # ── 批量导入 / 导出 ──

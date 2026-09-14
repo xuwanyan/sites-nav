@@ -874,7 +874,11 @@ async function loadSites() {
 }
 
 // 拉取拨测同步状态，更新卡片上的 📡 图标（延迟几次以覆盖后台同步完成）
-async function refreshProbeStatus(retry = 2) {
+// retry 默认 4：后端首次探测在后台线程跑，timeout=5 含建连+读取最坏 ~10s，
+// 原来 2 次 × 3s 只有 9s，冷启动会一直停在「状态未确认」
+async function refreshProbeStatus(retry = 4) {
+  const prevEnabled = monitorEnabled;
+  const prevState = monitorState;
   // 两个接口独立拉取。之前用 Promise.all，任一 5xx/401 会把两个一起吞掉，
   // monitorEnabled 停在初始 false，整页显示「未配置」，而且 catch 里什么都没说
   try {
@@ -889,6 +893,13 @@ async function refreshProbeStatus(retry = 2) {
     monitorState = "unknown";
   }
   updateMonitorBtn();   // 联动不可用时把表单里的复选框一起禁用
+  if (monitorEnabled !== prevEnabled || monitorState !== prevState) {
+    // 联动状态变了就重渲染卡片：probeBadge / monitorBtn 的文案和置灰状态是
+    // 渲染时写死进 innerHTML 的，只刷表单提示会让卡片一直停在「拨测状态未知」。
+    // 必须先于下面的 forEach 重渲染，否则刚建的 probe-<id> 元素会被覆盖掉
+    renderCategories();
+    renderSites();
+  }
   Object.entries(probeStatusMap).forEach(([id, st]) => {
     const el = document.getElementById("probe-" + id);
     if (!el) return;
