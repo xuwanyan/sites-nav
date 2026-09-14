@@ -163,10 +163,14 @@ docker compose up -d --force-recreate
 ## 升级
 
 ```bash
-git pull          # 或直接替换代码
+git pull                        # 或直接替换代码
 docker compose build
-docker compose up -d
+docker compose up -d --force-recreate
 ```
+
+> `--force-recreate` 不能省。`.env` 的改动不一定被 `up -d` 当成配置变化而重建容器，
+> 而变量是进程启动时一次性读入的 —— 容器不重建就永远是旧值。
+> 也等价于 `./deploy.sh --deploy` / `--update`（都已内置）。
 
 ## 本地开发（非 Docker）
 

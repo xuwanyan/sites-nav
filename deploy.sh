@@ -257,7 +257,17 @@ wait_healthy() {
 # ── 部署 ──
 do_deploy() {
     echo "🚀 构建并启动 sites-nav..."
-    docker compose up -d --build
+    # build 与 up 分开，且 up 带 --force-recreate。
+    # 原来用 `up -d --build`：镜像重建没问题，但 up 对"配置没变化"的服务会跳过重建，
+    # .env 的改动不一定被当成配置变化 —— 而 CATEGRAF_ADMIN_* / MYSQL_* 等变量是
+    # 进程启动时一次性读入的，容器不重建就永远是旧值。踩过的坑：.env 明明改对了、
+    # 容器里的 printenv 也有值，前端却还显示未配置。
+    # --force-recreate 保证每次部署都用新镜像 + 新 env。
+    # 代价：内置 mysql（builtin-mysql profile 激活时）也会跟着重建一次。
+    # 数据在 mysql_data 命名卷里不受影响，只是多一次重启；mysql 的 env 本来就只在
+    # 首次初始化生效（见 docker-compose.yml），重建对它无害。
+    docker compose build
+    docker compose up -d --force-recreate
     wait_healthy
     echo ""
     echo "══════════════════════════════════════"
@@ -270,9 +280,11 @@ do_deploy() {
 
 # ── 更新 ──
 do_update() {
-    echo "🔄 拉取并重启..."
+    echo "🔄 重建并重启..."
+    # 同 do_deploy：必须 --force-recreate，否则 .env 的改动不会生效。
+    # 这里不 git pull —— 镜像从当前目录构建，要更新版本得先自己 git pull。
     docker compose pull 2>/dev/null || docker compose build
-    docker compose up -d
+    docker compose up -d --force-recreate
     wait_healthy
     echo "✅ 更新完成"
 }
