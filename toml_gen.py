@@ -243,7 +243,7 @@ def config_version(targets: list[dict]) -> str:
     import hashlib
     h = hashlib.md5()
     # 生成器版本盐：TOML 生成逻辑变更时递增，强制 categraf 重新拉取配置
-    h.update(b"schema:v2|")
+    h.update(b"schema:v3|")
     sorted_targets = sorted(targets, key=lambda t: t.get("id", ""))
     for t in sorted_targets:
         headers = t.get("headers") or []
@@ -259,6 +259,7 @@ def config_version(targets: list[dict]) -> str:
             t.get("tls_ca", ""),
             str(bool(t.get("insecure_skip_verify", False))),
             t.get("protocol", ""),
+            t.get("timeout", ""),
             t.get("read_timeout", ""),
             t.get("send", ""),
             t.get("expect", ""),

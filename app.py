@@ -762,46 +762,66 @@ class ProbeIn(BaseModel):
     expect: str = Field(default="", max_length=500)
 
 
+def _load_probes_unlocked() -> list[dict]:
+    """无锁加载：调用方必须已持有 _probes_lock"""
+    if not PROBES_FILE.exists():
+        return []
+    try:
+        raw = json.loads(PROBES_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        # 主文件损坏：尝试从备份恢复
+        if PROBES_BACKUP.exists():
+            try:
+                raw = json.loads(PROBES_BACKUP.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                return []
+        else:
+            return []
+    if not isinstance(raw, list):
+        return []
+    # 确保每条记录有合法 id
+    result = []
+    for item in raw:
+        if isinstance(item, dict) and item.get("url"):
+            if not isinstance(item.get("id"), str) or len(item.get("id", "")) != 8:
+                item["id"] = secrets.token_hex(4)
+            result.append(item)
+    return result
+
+
 def _load_probes() -> list[dict]:
     """加载端口拨测目标列表"""
     with _probes_lock:
-        if not PROBES_FILE.exists():
-            return []
+        return _load_probes_unlocked()
+
+
+def _save_probes_unlocked(probes: list[dict]) -> None:
+    """无锁保存：调用方必须已持有 _probes_lock"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if PROBES_FILE.exists():
         try:
-            raw = json.loads(PROBES_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            # 主文件损坏：尝试从备份恢复
-            if PROBES_BACKUP.exists():
-                try:
-                    raw = json.loads(PROBES_BACKUP.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError):
-                    return []
-            else:
-                return []
-        if not isinstance(raw, list):
-            return []
-        # 确保每条记录有合法 id
-        result = []
-        for item in raw:
-            if isinstance(item, dict) and item.get("url"):
-                if not isinstance(item.get("id"), str) or len(item.get("id", "")) != 8:
-                    item["id"] = secrets.token_hex(4)
-                result.append(item)
-        return result
+            PROBES_BACKUP.write_bytes(PROBES_FILE.read_bytes())
+        except OSError:
+            pass
+    tmp = PROBES_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(probes, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, PROBES_FILE)
 
 
 def _save_probes(probes: list[dict]) -> None:
     """保存端口拨测目标列表（带备份轮转）"""
     with _probes_lock:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        if PROBES_FILE.exists():
-            try:
-                PROBES_BACKUP.write_bytes(PROBES_FILE.read_bytes())
-            except OSError:
-                pass
-        tmp = PROBES_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(probes, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, PROBES_FILE)
+        _save_probes_unlocked(probes)
+
+
+def _load_mutate_probes(fn) -> list:
+    """原子读-改-写：fn(probes) 原地修改列表。fn 抛 HTTPException 时不写入。
+    与站点 _load_mutate 同模式：防止 _load_probes→_save_probes 之间被并发请求覆盖。"""
+    with _probes_lock:
+        probes = _load_probes_unlocked()
+        fn(probes)
+        _save_probes_unlocked(probes)
+        return probes
 
 
 def _all_probe_targets() -> list[dict]:
@@ -897,18 +917,18 @@ def create_probe(probe: ProbeIn, authorization: str | None = Header(default=None
     data["expect"] = _unescape_ctl(data["expect"])
     data["kind"] = KIND_NET
 
-    probes = _load_probes()
-    # URL 不允许重复；job 在同类型内不允许重复
-    for p in probes:
-        if p["url"] == data["url"]:
-            raise HTTPException(status_code=409, detail=f"目标地址已存在: {data['url']}")
-        if p.get("job") == data["job"]:
-            raise HTTPException(status_code=409, detail=f"job 名称已存在: {data['job']}")
+    def _mutate(probes):
+        # URL 不允许重复；job 在同类型内不允许重复
+        for p in probes:
+            if p["url"] == data["url"]:
+                raise HTTPException(status_code=409, detail=f"目标地址已存在: {data['url']}")
+            if p.get("job") == data["job"]:
+                raise HTTPException(status_code=409, detail=f"job 名称已存在: {data['job']}")
+        data["id"] = secrets.token_hex(4)
+        data["created_at"] = _now()
+        probes.append(data)
 
-    data["id"] = secrets.token_hex(4)
-    data["created_at"] = _now()
-    probes.append(data)
-    _save_probes(probes)
+    _load_mutate_probes(_mutate)
     return data
 
 
@@ -922,37 +942,41 @@ def update_probe(probe_id: str, probe: ProbeIn, authorization: str | None = Head
     data["expect"] = _unescape_ctl(data["expect"])
     data["kind"] = KIND_NET
 
-    probes = _load_probes()
-    idx = next((i for i, p in enumerate(probes) if p["id"] == probe_id), None)
-    if idx is None:
-        raise HTTPException(status_code=404, detail="拨测目标不存在")
+    captured: dict = {}
 
-    # 检查重复（排除自身）
-    for p in probes:
-        if p["id"] != probe_id:
-            if p["url"] == data["url"]:
-                raise HTTPException(status_code=409, detail=f"目标地址已存在: {data['url']}")
-            if p.get("job") == data["job"]:
-                raise HTTPException(status_code=409, detail=f"job 名称已存在: {data['job']}")
+    def _mutate(probes):
+        idx = next((i for i, p in enumerate(probes) if p["id"] == probe_id), None)
+        if idx is None:
+            raise HTTPException(status_code=404, detail="拨测目标不存在")
+        # 检查重复（排除自身）
+        for p in probes:
+            if p["id"] != probe_id:
+                if p["url"] == data["url"]:
+                    raise HTTPException(status_code=409, detail=f"目标地址已存在: {data['url']}")
+                if p.get("job") == data["job"]:
+                    raise HTTPException(status_code=409, detail=f"job 名称已存在: {data['job']}")
+        data["id"] = probe_id
+        data["created_at"] = probes[idx].get("created_at", _now())
+        data["updated_at"] = _now()
+        probes[idx] = data
+        captured["data"] = data
 
-    data["id"] = probe_id
-    data["created_at"] = probes[idx].get("created_at", _now())
-    data["updated_at"] = _now()
-    probes[idx] = data
-    _save_probes(probes)
-    return data
+    _load_mutate_probes(_mutate)
+    return captured["data"]
 
 
 @app.delete("/api/probes/{probe_id}")
 def delete_probe(probe_id: str, authorization: str | None = Header(default=None)):
     """删除端口拨测目标"""
     _require_admin(authorization)
-    probes = _load_probes()
-    idx = next((i for i, p in enumerate(probes) if p["id"] == probe_id), None)
-    if idx is None:
-        raise HTTPException(status_code=404, detail="拨测目标不存在")
-    probes.pop(idx)
-    _save_probes(probes)
+
+    def _mutate(probes):
+        idx = next((i for i, p in enumerate(probes) if p["id"] == probe_id), None)
+        if idx is None:
+            raise HTTPException(status_code=404, detail="拨测目标不存在")
+        probes.pop(idx)
+
+    _load_mutate_probes(_mutate)
     return {"ok": True}
 
 
@@ -1113,7 +1137,7 @@ def create_site(site: SiteIn, authorization: str | None = Header(default=None)):
     return item
 
 
-def _validate_site_payload(data: dict, *, monitor_already_on: bool = False) -> None:
+def _validate_site_payload(data: dict) -> None:
     """校验创建/更新站点的最小字段：URL 或连接串至少填一个；勾选拨测必须有 URL；拨测参数格式合法"""
     if not any((data.get(k) or "").strip() for k in ("domain", "public_url", "private_url", "connection")):
         raise HTTPException(status_code=400, detail="域名/公网/内网/连接串至少填一个")
@@ -1136,16 +1160,14 @@ def _validate_site_payload(data: dict, *, monitor_already_on: bool = False) -> N
 @app.put("/api/sites/{site_id}")
 def update_site(site_id: str, site: SiteIn, authorization: str | None = Header(default=None)):
     _require_admin(authorization)
-    # 先读一次现有记录，判断 monitor=true 是不是本次新加的勾选（见 _validate_site_payload）。
-    # 顺带让 404 在这里给出，不用等 _mutate。
-    # 这里是只读检查，可能与并发写入竞态；最坏情况是读到稍旧的 monitor 值，
-    # 只影响"是否放宽联动配置校验"这一项，不造成数据问题。
+    # 先读一次现有记录，顺带让 404 在这里给出，不用等 _mutate。
+    # 这里是只读检查，可能与并发写入竞态；不影响数据正确性（_mutate 内有最终 404 兜底）。
     existing = next((s for s in _load() if s["id"] == site_id), None)
     if existing is None:
         raise HTTPException(status_code=404, detail="条目不存在")
     data = site.model_dump()
     data["name"] = (data.get("name") or "").strip()
-    _validate_site_payload(data, monitor_already_on=bool(existing.get("monitor")))
+    _validate_site_payload(data)
 
     captured: dict = {}
 
@@ -1219,6 +1241,18 @@ def _parse_bool(v) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "是", "y")
 
 
+def _parse_tri_bool(v) -> bool | None:
+    """三态布尔：空/none/null → None（用 categraf 默认值），其余走 _parse_bool"""
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    if s in ("", "none", "null"):
+        return None
+    return s in ("1", "true", "yes", "是", "y")
+
+
 def _normalize_import_row(row: dict, idx: int) -> dict:
     name = str(row.get("name") or row.get("系统名称") or "").strip()
     if not name:
@@ -1252,6 +1286,13 @@ def _normalize_import_row(row: dict, idx: int) -> dict:
         # 拨测参数：留空即默认（状态码 200、不设超时），与 _export_csv 的列一一对应
         "probe_status_codes": str(row.get("probe_status_codes") or row.get("拨测状态码") or "").strip(),
         "probe_timeout": str(row.get("probe_timeout") or row.get("拨测超时") or "").strip(),
+        # 细粒度拨测配置（与创建/更新路径一致）
+        "probe_method": str(row.get("probe_method") or row.get("拨测方法") or "").strip(),
+        "probe_headers": str(row.get("probe_headers") or row.get("拨测请求头") or "").strip(),
+        "probe_body": str(row.get("probe_body") or row.get("拨测Body") or "").strip(),
+        "probe_follow_redirects": _parse_tri_bool(row.get("probe_follow_redirects") if "probe_follow_redirects" in row else row.get("跟随重定向")),
+        "probe_insecure_skip_verify": _parse_bool(row.get("probe_insecure_skip_verify") if "probe_insecure_skip_verify" in row else row.get("跳过证书校验")),
+        "probe_tls_ca": str(row.get("probe_tls_ca") or row.get("私有CA路径") or "").strip(),
     }
 
 
@@ -1304,6 +1345,12 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
                 "monitor": item_data["monitor"],
                 "probe_status_codes": item_data.get("probe_status_codes", ""),
                 "probe_timeout": item_data.get("probe_timeout", ""),
+                "probe_method": item_data.get("probe_method", ""),
+                "probe_headers": item_data.get("probe_headers", ""),
+                "probe_body": item_data.get("probe_body", ""),
+                "probe_follow_redirects": item_data.get("probe_follow_redirects"),
+                "probe_insecure_skip_verify": item_data.get("probe_insecure_skip_verify", False),
+                "probe_tls_ca": item_data.get("probe_tls_ca", ""),
             }).model_dump()
             # 与创建/更新路径同一条校验线。之前导入漏掉这步，两条防线都能被批量导入绕过：
             #   1. 勾选拨测但只有连接串（无 URL）→ 记录 monitor=true 却永远无可探测地址
@@ -1361,11 +1408,20 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
 def _export_csv(sites: list) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    header_cn = ["系统名称", "资源类型", "分类", "域名", "公网地址", "内网地址", "连接串", "负责人", "环境标识", "备注", "拨测监控", "拨测状态码", "拨测超时"]
+    header_cn = ["系统名称", "资源类型", "分类", "域名", "公网地址", "内网地址", "连接串", "负责人", "环境标识", "备注", "拨测监控", "拨测状态码", "拨测超时", "拨测方法", "拨测请求头", "拨测Body", "跟随重定向", "跳过证书校验", "私有CA路径"]
     writer.writerow(header_cn)
-    key_map = ["name", "kind", "category", "domain", "public_url", "private_url", "connection", "owner", "env", "remark", "monitor", "probe_status_codes", "probe_timeout"]
+    key_map = ["name", "kind", "category", "domain", "public_url", "private_url", "connection", "owner", "env", "remark", "monitor", "probe_status_codes", "probe_timeout", "probe_method", "probe_headers", "probe_body", "probe_follow_redirects", "probe_insecure_skip_verify", "probe_tls_ca"]
     for s in sites:
-        writer.writerow([s.get(k, "") for k in key_map])
+        row = []
+        for k in key_map:
+            v = s.get(k, "")
+            if k == "probe_follow_redirects":
+                row.append("" if v is None else ("true" if v else "false"))
+            elif isinstance(v, bool):
+                row.append("true" if v else "false")
+            else:
+                row.append(v)
+        writer.writerow(row)
     # utf-8-sig 带 BOM，Excel 直接打开不乱码
     return buf.getvalue().encode("utf-8-sig")
 
