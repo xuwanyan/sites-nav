@@ -44,7 +44,7 @@ categraf ──http_provider──→ GET /api/config/http_response
 cd sites-nav
 cp .env.example .env
 # 编辑 .env：填 MYSQL_PASSWORD（bootstrap 会自动生成，也可自己写强密码）
-# 如需 categraf 拉取认证：生成 CATEGRAF_TOKEN
+# 必配 CATEGRAF_TOKEN（categraf 拉取配置的 Bearer token，不配则拉取端点拒绝请求）
 docker compose up -d --build
 ```
 
@@ -79,7 +79,7 @@ docker compose up -d --build
 | `MYSQL_ROOT_PASSWORD` | 内置时是 | 空 | 内置 mysql 的 root 密码，**仅数据卷首次初始化生效** |
 | `ADMIN_PASSWORD` | 否 | 空 | 仅用于首次启动种子 admin。留空自动生成随机密码并打印一次 |
 | `TOKEN_TTL_HOURS` | 否 | `12` | 会话有效期（小时），超时需重新登录 |
-| `CATEGRAF_TOKEN` | 否 | 空 | categraf 拉取配置用的 Bearer token。不设则 `/api/config/http_response` 公开（建议配置） |
+| `CATEGRAF_TOKEN` | 是 | 空 | categraf 拉取配置用的 Bearer token。不设则 `/api/config/http_response` 拒绝一切拉取请求（fail closed） |
 
 **用已有 MySQL（服务器上已装）时**：`.env` 里把 `MYSQL_HOST` 改成实际地址，**`docker-compose.yml` 不用动**——内置 mysql 服务挂在 `profiles` 上，部署脚本会按 `.env` 自动决定是否激活。改完重跑 `deploy.sh` 即可。建库建账号 SQL、`MYSQL_HOST` 的取值、备份命令差异见 [DEPLOY.md → 用已有 MySQL](DEPLOY.md#用已有-mysql)。
 
@@ -205,7 +205,7 @@ timeout = 5
 reload_interval = 60
 ```
 
-> `headers` 走 `Authorization: Bearer <token>` 请求头，token 不进 URL / 日志。`<你的CATEGRAF_TOKEN>` 填 `.env` 里 `CATEGRAF_TOKEN` 的值。若你的 categraf 版本不支持 `http_provider.headers`，需升级或保留该端点公开。
+> `headers` 走 `Authorization: Bearer <token>` 请求头，token 不进 URL / 日志。`<你的CATEGRAF_TOKEN>` 填 `.env` 里 `CATEGRAF_TOKEN` 的值。`CATEGRAF_TOKEN` 是必配项，未配置时该端点拒绝一切拉取请求；若你的 categraf 版本不支持 `http_provider.headers`，需升级 categraf 或改用支持该配置的版本。
 
 然后重启 categraf：
 

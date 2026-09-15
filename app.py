@@ -64,7 +64,7 @@ TOKEN_SECRET = secrets.token_hex(32)
 TOKEN_TTL = int(os.environ.get("TOKEN_TTL_HOURS", "12") or "12") * 3600
 
 # ── categraf http_provider ──
-# CATEGRAF_TOKEN：categraf 拉取配置用的 Bearer token（不设则端点公开，建议设）
+# CATEGRAF_TOKEN：categraf 拉取配置用的 Bearer token（必配；不设则端点拒绝一切拉取请求）
 # 与登录账密解耦：登录密码只用于 Web 页面，categraf config.toml 里只放这个 token
 CATEGRAF_TOKEN = os.environ.get("CATEGRAF_TOKEN", "")
 
@@ -821,9 +821,10 @@ def _all_probe_targets() -> list[dict]:
 
 def _require_categraf_token(authorization: str | None = Header(default=None)) -> None:
     """categraf http_provider 拉取端点的 Bearer token 认证。
-    未配 CATEGRAF_TOKEN 时端点公开（向后兼容）。常量时间比较防时序侧信道。"""
+    未配 CATEGRAF_TOKEN 时拒绝一切拉取请求（fail closed，防止配置意外裸露）。
+    常量时间比较防时序侧信道。"""
     if not CATEGRAF_TOKEN:
-        return
+        raise HTTPException(status_code=401, detail="unauthorized")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="unauthorized")
     token = authorization[7:]
@@ -1202,11 +1203,11 @@ def monitor_status(authorization: str | None = Header(default=None)):
 @app.get("/api/monitor-config")
 def monitor_config(authorization: str | None = Header(default=None)):
     """拨测配置状态。enabled=True 表示本服务可作为 categraf http_provider 使用。
-    state 简化为两种：ok=已配置 CATEGRAF_TOKEN，off=未配置（端点公开，不推荐）。"""
+    state：ok=已配置 CATEGRAF_TOKEN，error=未配置（端点拒绝一切拉取请求，fail closed）。"""
     _require_user(authorization)
     if CATEGRAF_TOKEN:
         return {"enabled": True, "state": "ok", "reason": ""}
-    return {"enabled": True, "state": "off", "reason": "未配置 CATEGRAF_TOKEN，/api/config/http_response 端点公开（建议配置）"}
+    return {"enabled": False, "state": "error", "reason": "未配置 CATEGRAF_TOKEN，/api/config/http_response 将拒绝所有拉取请求（fail closed）"}
 
 
 # ── 批量导入 / 导出 ──
