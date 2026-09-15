@@ -135,9 +135,16 @@ class SiteIn(BaseModel):
     env: Literal["生产环境", "测试环境"]  # 环境必填，且只允许生产环境/测试环境
     remark: str = Field(default="", max_length=500)
     monitor: bool = False
-    # 拨测参数：留空用默认（状态码 200、不设置超时）；状态码多个用 | 分隔，超时如 3s/500ms/1m（纯数字自动按秒）
+    # 拨测参数：留空用默认（状态码 200、GET、不设置超时）；状态码多个用 | 分隔，超时如 3s/500ms/1m（纯数字自动按秒）
     probe_status_codes: str = Field(default="", pattern=r"^(\d{3}(\|\d{3})*)?$")
     probe_timeout: str = Field(default="", pattern=r"^(\d+(ms|s|m))?$")
+    # 细粒度拨测配置（对齐原 categraf-http-admin）：方法/请求头/Body/跟随重定向/私有 CA/跳过证书校验
+    probe_method: str = Field(default="", pattern=r"^(|GET|POST|PUT|DELETE|HEAD)$")
+    probe_headers: str = Field(default="", max_length=2000)  # JSON 数组字符串，如 ["X-Key","val"]
+    probe_body: str = Field(default="", max_length=4000)
+    probe_follow_redirects: bool | None = None  # None=用 categraf 默认；显式 true/false 才落盘
+    probe_insecure_skip_verify: bool = False  # 跳过证书校验（与 tls_ca 互斥，跳过优先）
+    probe_tls_ca: str = Field(default="", max_length=500)  # 私有 CA 证书路径（categraf 服务器本地路径）
 
     @field_validator("probe_timeout", mode="before")
     @classmethod
@@ -189,6 +196,12 @@ FIELD_DEFAULTS = {
     "monitor": False,
     "probe_status_codes": "",
     "probe_timeout": "",
+    "probe_method": "",
+    "probe_headers": "",
+    "probe_body": "",
+    "probe_follow_redirects": None,
+    "probe_insecure_skip_verify": False,
+    "probe_tls_ca": "",
     "created_at": "",
     "updated_at": "",
 }
@@ -691,17 +704,48 @@ def _site_to_http_target(site: dict) -> dict | None:
         return None
     codes = (site.get("probe_status_codes") or "").strip() or "200"
     timeout = (site.get("probe_timeout") or "").strip()
+    skip_verify = bool(site.get("probe_insecure_skip_verify"))
+    tls_ca = "" if skip_verify else (site.get("probe_tls_ca") or "").strip()
     target = {
         "id": site["id"],
         "kind": KIND_HTTP,
         "url": url,
         "job": _probe_job(site),
-        "method": "GET",
+        "method": (site.get("probe_method") or "").strip() or "GET",
         "expected_status_codes": codes,
+        "headers": _parse_probe_headers(site.get("probe_headers") or ""),
+        "body": site.get("probe_body") or "",
+        "follow_redirects": site.get("probe_follow_redirects"),
+        # use_tls 由是否需要 TLS 配置块自动推导（对齐 Go 版 normalizeTLS）
+        "use_tls": skip_verify or bool(tls_ca),
+        "tls_ca": tls_ca,
+        "insecure_skip_verify": skip_verify,
     }
     if timeout:
         target["response_timeout"] = timeout
     return target
+
+
+def _parse_probe_headers(raw) -> list[str]:
+    """解析请求头 JSON 数组。非法 JSON 或非字符串数组抛 ValueError（对齐 Go 版 targetFromForm）"""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [str(h) for h in raw]
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise ValueError(f"请求头 JSON 格式非法: {e}")
+    if not isinstance(parsed, list) or not all(isinstance(h, str) for h in parsed):
+        raise ValueError("请求头 JSON 格式非法: 应为字符串数组，如 [\"X-Key\",\"val\"]")
+    return parsed
+
+
+def _normalize_probe_tls(data: dict) -> None:
+    """归一化 TLS 字段（对齐 Go 版 normalizeTLS）：跳过校验与 CA 互斥（跳过优先，清空 CA）"""
+    data["probe_tls_ca"] = (data.get("probe_tls_ca") or "").strip()
+    if data.get("probe_insecure_skip_verify"):
+        data["probe_tls_ca"] = ""
 
 
 # ── 端口拨测目标存储（data/probes.json）──
@@ -819,6 +863,18 @@ def categraf_config(authorization: str | None = Header(default=None)):
 
 
 # ── 端口拨测目标 CRUD API（管理员）──
+
+
+@app.get("/api/config/preview")
+def config_preview(authorization: str | None = Header(default=None)):
+    """给管理页面预览当前生成的 TOML 配置（对齐原 categraf-http-admin 首页的 TOML 展示）"""
+    _require_admin(authorization)
+    targets = _all_probe_targets()
+    return {
+        "version": config_version(targets),
+        "http_toml": generate_http_toml(targets),
+        "net_toml": generate_net_toml(targets),
+    }
 
 
 @app.get("/api/probes")
@@ -1067,6 +1123,13 @@ def _validate_site_payload(data: dict, *, monitor_already_on: bool = False) -> N
         codes_err = validate_status_codes(data.get("probe_status_codes", ""))
         if codes_err:
             raise HTTPException(status_code=400, detail=codes_err)
+        # 校验请求头 JSON 数组格式（对齐 Go 版 targetFromForm 的报错）
+        try:
+            _parse_probe_headers(data.get("probe_headers") or "")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    # TLS 字段归一化：跳过校验与私有 CA 互斥（跳过优先，清空 CA），无论是否勾选拨测都统一处理
+    _normalize_probe_tls(data)
 
 
 @app.put("/api/sites/{site_id}")

@@ -40,6 +40,7 @@ def _http_profile_key(t: dict) -> str:
         "use_tls": t.get("use_tls", False),
         "tls_ca": t.get("tls_ca", ""),
         "insecure_skip_verify": t.get("insecure_skip_verify", False),
+        "follow_redirects": t.get("follow_redirects"),
     }
     return json.dumps(profile, ensure_ascii=False, sort_keys=True)
 
@@ -88,6 +89,7 @@ def generate_http_toml(targets: list[dict]) -> str:
                     "use_tls": t.get("use_tls", False),
                     "tls_ca": t.get("tls_ca", ""),
                     "insecure_skip_verify": t.get("insecure_skip_verify", False),
+                    "follow_redirects": t.get("follow_redirects"),
                 },
                 "urls": [],
             }
@@ -137,6 +139,9 @@ def generate_http_toml(targets: list[dict]) -> str:
             lines.append(f"headers = [{quoted}]")
         if p["body"]:
             lines.append(f'body = """\n{p["body"]}\n"""')
+        # follow_redirects：显式设置才落盘，留空用 categraf 默认值
+        if p["follow_redirects"] is not None:
+            lines.append(f'follow_redirects = {"true" if p["follow_redirects"] else "false"}')
         if p["use_tls"] or p["insecure_skip_verify"]:
             # insecure_skip_verify 必须配合 use_tls = true 才生效
             lines.append("use_tls = true")
@@ -237,9 +242,11 @@ def config_version(targets: list[dict]) -> str:
     """
     import hashlib
     h = hashlib.md5()
-    h.update(b"schema:v1|")
+    # 生成器版本盐：TOML 生成逻辑变更时递增，强制 categraf 重新拉取配置
+    h.update(b"schema:v2|")
     sorted_targets = sorted(targets, key=lambda t: t.get("id", ""))
     for t in sorted_targets:
+        headers = t.get("headers") or []
         parts = [
             t.get("id", ""),
             t.get("kind", ""),
@@ -248,15 +255,16 @@ def config_version(targets: list[dict]) -> str:
             t.get("job", ""),
             t.get("expected_status_codes", ""),
             t.get("response_timeout", ""),
-            str(t.get("use_tls", False)),
+            str(bool(t.get("use_tls", False))),
             t.get("tls_ca", ""),
-            str(t.get("insecure_skip_verify", False)),
+            str(bool(t.get("insecure_skip_verify", False))),
             t.get("protocol", ""),
             t.get("read_timeout", ""),
             t.get("send", ""),
             t.get("expect", ""),
             t.get("body", ""),
-            json.dumps(sorted(t.get("headers", [])), ensure_ascii=False) if t.get("headers") else "",
+            json.dumps(headers, ensure_ascii=False) if headers else "",
+            str(t.get("follow_redirects")),
         ]
         h.update("|".join(parts).encode("utf-8"))
     return h.hexdigest()

@@ -552,15 +552,15 @@
       <div id="urlFields">
         <div class="form-group">
           <label>域名</label>
-          <input type="text" id="f_domain" placeholder="如 gitlab.company.com" oninput="updateMonitorBtn()">
+          <input type="text" id="f_domain" placeholder="如 gitlab.company.com" oninput="updateMonitorBtn(); updateProbeTls()">
         </div>
         <div class="form-group">
           <label>公网地址</label>
-          <input type="text" id="f_public_url" placeholder="https://..." oninput="updateMonitorBtn()">
+          <input type="text" id="f_public_url" placeholder="https://..." oninput="updateMonitorBtn(); updateProbeTls()">
         </div>
         <div class="form-group">
           <label>内网地址</label>
-          <input type="text" id="f_internal_url" placeholder="http://192.168..." oninput="updateMonitorBtn()">
+          <input type="text" id="f_internal_url" placeholder="http://192.168..." oninput="updateMonitorBtn(); updateProbeTls()">
         </div>
       </div>
 
@@ -593,6 +593,53 @@
         <div class="form-group">
           <label>超时时长</label>
           <input type="text" id="f_probe_timeout" placeholder="如 3s / 500ms，纯数字按秒，留空不设置">
+        </div>
+      </div>
+      <div id="probeAdvBlock" style="display:none;">
+        <div class="form-row">
+          <div class="form-group" style="max-width:150px;">
+            <label>请求方法</label>
+            <select id="f_probe_method">
+              <option value="">默认（GET）</option>
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="DELETE">DELETE</option>
+              <option value="HEAD">HEAD</option>
+            </select>
+          </div>
+          <div class="form-group" style="max-width:150px;">
+            <label>跟随重定向</label>
+            <select id="f_probe_follow_redirects">
+              <option value="">默认</option>
+              <option value="true">跟随</option>
+              <option value="false">不跟随</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>请求头（JSON 数组）</label>
+            <input type="text" id="f_probe_headers" placeholder='["X-Key","val"]'>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>请求 Body</label>
+            <textarea id="f_probe_body" placeholder='{"key":"value"}'></textarea>
+          </div>
+        </div>
+        <div id="probeTlsBlock" style="display:none; padding:10px 12px; background:#f8f9ff; border-radius:6px; margin-bottom:12px;">
+          <div class="form-row" style="margin-bottom:0;">
+            <div class="form-group" style="min-width:auto; display:flex; align-items:center;">
+              <label style="display:flex; align-items:center; gap:6px; font-weight:400; cursor:pointer; margin:0;">
+                <input type="checkbox" id="f_probe_skip_verify" style="width:auto;" onchange="toggleProbeSkip()">
+                <span title="临时跳过证书校验（证书过期/自签名可用，不建议长期开启）">⚠️ 跳过证书校验</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label>TLS CA 证书路径（categraf 服务器本地路径，仅内网自建 CA 需要）</label>
+              <input type="text" id="f_probe_tls_ca" placeholder="/etc/categraf/ca.pem">
+            </div>
+          </div>
         </div>
       </div>
       <div class="form-group">
@@ -1361,7 +1408,7 @@ function doExport(format) {
 // 草稿让你关掉再打开接着填。
 // 编辑模式不走草稿：它总是从数据库记录加载，草稿会污染编辑结果，所以 openEditSite 会清掉它。
 let siteDraft = null;
-const _SITE_FIELD_IDS = ["f_name","f_kind_custom","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_probe_codes","f_probe_timeout"];
+const _SITE_FIELD_IDS = ["f_name","f_kind_custom","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_probe_codes","f_probe_timeout","f_probe_method","f_probe_follow_redirects","f_probe_headers","f_probe_body","f_probe_tls_ca"];
 
 function _readSiteFields() {
   const d = {};
@@ -1369,6 +1416,7 @@ function _readSiteFields() {
   d.f_kind = $("f_kind").value;
   d.f_environment = $("f_environment").value;
   d.f_monitor = $("f_monitor").checked;
+  d.f_probe_skip_verify = $("f_probe_skip_verify").checked;
   return d;
 }
 function _applySiteFields(d) {
@@ -1376,6 +1424,8 @@ function _applySiteFields(d) {
   $("f_kind").value = d.f_kind || "网站";
   $("f_environment").value = d.f_environment || "生产环境";
   $("f_monitor").checked = !!d.f_monitor;
+  $("f_probe_skip_verify").checked = !!d.f_probe_skip_verify;
+  toggleProbeSkip();
 }
 function _hasSiteContent() {
   const d = _readSiteFields();
@@ -1427,6 +1477,13 @@ function openEditSite(siteId) {
   $("f_monitor").checked = !!s.monitor;
   $("f_probe_codes").value = s.probe_status_codes || "";
   $("f_probe_timeout").value = s.probe_timeout || "";
+  $("f_probe_method").value = s.probe_method || "";
+  $("f_probe_follow_redirects").value = s.probe_follow_redirects === true ? "true" : (s.probe_follow_redirects === false ? "false" : "");
+  $("f_probe_headers").value = s.probe_headers || "";
+  $("f_probe_body").value = s.probe_body || "";
+  $("f_probe_skip_verify").checked = !!s.probe_insecure_skip_verify;
+  $("f_probe_tls_ca").value = s.probe_tls_ca || "";
+  toggleProbeSkip();
   $("f_remark").value = s.remark || "";
   // 回填 kind：预设类型选中，其他放到自定义输入框
   const kind = s.kind || "网站";
@@ -1471,6 +1528,12 @@ async function saveSite(btn) {
       monitor: $("f_monitor").checked,
       probe_status_codes: $("f_probe_codes").value.trim(),
       probe_timeout: $("f_probe_timeout").value.trim(),
+      probe_method: $("f_probe_method").value,
+      probe_headers: $("f_probe_headers").value.trim(),
+      probe_body: $("f_probe_body").value,
+      probe_follow_redirects: $("f_probe_follow_redirects").value === "" ? null : $("f_probe_follow_redirects").value === "true",
+      probe_insecure_skip_verify: $("f_probe_skip_verify").checked,
+      probe_tls_ca: $("f_probe_tls_ca").value.trim(),
     };
     if (!data.name) { showToast("请输入名称", "error"); return; }
     if (!data.env) { showToast("请选择环境标识", "error"); return; }
@@ -1482,7 +1545,7 @@ async function saveSite(btn) {
       if (!data.domain && !data.public_url && !data.private_url) {
         showToast("勾选拨测监控需要至少填一个 URL 地址", "error"); return;
       }
-      if (!validProbeParams(data.probe_status_codes, data.probe_timeout)) return;
+      if (!validProbeParams(data.probe_status_codes, data.probe_timeout, data.probe_headers)) return;
     }
     if (id) {
       await api(`/api/sites/${id}`, { method: "PUT", body: JSON.stringify(data) });
@@ -1545,16 +1608,20 @@ function updateMonitorBtn() {
     monitorCb.disabled = true;
     monitorCb.style.opacity = ".5";
     paramsRow.style.display = "none";
+    $("probeAdvBlock").style.display = "none";
   } else if (hasUrl) {
     monitorCb.disabled = false;
     monitorCb.style.opacity = "1";
     paramsRow.style.display = monitorCb.checked ? "" : "none";
+    $("probeAdvBlock").style.display = monitorCb.checked ? "" : "none";
   } else {
     monitorCb.checked = false;
     monitorCb.disabled = true;
     monitorCb.style.opacity = ".5";
     paramsRow.style.display = "none";
+    $("probeAdvBlock").style.display = "none";
   }
+  updateProbeTls();
 }
 
 // ==================== 快捷加入/取消监控 ====================
@@ -1570,12 +1637,18 @@ function sitePayload(s, overrides = {}) {
     monitor: !!s.monitor,
     probe_status_codes: s.probe_status_codes || "",
     probe_timeout: s.probe_timeout || "",
+    probe_method: s.probe_method || "",
+    probe_headers: s.probe_headers || "",
+    probe_body: s.probe_body || "",
+    probe_follow_redirects: s.probe_follow_redirects === true || s.probe_follow_redirects === false ? s.probe_follow_redirects : null,
+    probe_insecure_skip_verify: !!s.probe_insecure_skip_verify,
+    probe_tls_ca: s.probe_tls_ca || "",
     ...overrides,
   };
 }
 
 // 与后端校验一致（后端会把纯数字补成 s）；返回 false 时已弹提示
-function validProbeParams(codes, timeout) {
+function validProbeParams(codes, timeout, headersRaw) {
   if (codes && !/^(\d{3}(\|\d{3})*)?$/.test(codes)) {
     showToast("期望状态码格式不对：3 位数字，多个用 | 分隔（如 200|301）", "error");
     return false;
@@ -1584,16 +1657,62 @@ function validProbeParams(codes, timeout) {
     showToast("超时时长格式不对：可只填数字按秒（如 3），或 3s / 500ms / 1m", "error");
     return false;
   }
+  if (headersRaw) {
+    try {
+      const arr = JSON.parse(headersRaw);
+      if (!Array.isArray(arr) || !arr.every(h => typeof h === "string")) {
+        showToast("请求头格式不对：应为字符串数组，如 [\"X-Key\",\"val\"]", "error");
+        return false;
+      }
+    } catch (e) {
+      showToast("请求头不是合法 JSON：如 [\"X-Key\",\"val\"]", "error");
+      return false;
+    }
+  }
   return true;
 }
 
 function toggleProbeParams() {
   const checked = $("f_monitor").checked;
   $("probeParamsRow").style.display = checked ? "" : "none";
-  // 取消勾选时清空参数，避免残留脏数据（后端 monitor=false 时不读这两个字段，但留着没意义）
+  $("probeAdvBlock").style.display = checked ? "" : "none";
+  // 取消勾选时清空参数，避免残留脏数据（后端 monitor=false 时不读这些字段，但留着没意义）
   if (!checked) {
     $("f_probe_codes").value = "";
     $("f_probe_timeout").value = "";
+    $("f_probe_method").value = "";
+    $("f_probe_follow_redirects").value = "";
+    $("f_probe_headers").value = "";
+    $("f_probe_body").value = "";
+    $("f_probe_skip_verify").checked = false;
+    $("f_probe_tls_ca").value = "";
+  }
+  updateProbeTls();
+}
+
+// 跳过校验与私有 CA 互斥（对齐后端 _normalize_probe_tls：跳过优先，清空 CA）
+function toggleProbeSkip() {
+  const skip = $("f_probe_skip_verify").checked;
+  const ca = $("f_probe_tls_ca");
+  if (skip) {
+    ca.value = "";
+    ca.disabled = true;
+    ca.style.opacity = ".5";
+  } else {
+    ca.disabled = false;
+    ca.style.opacity = "1";
+  }
+}
+
+// 拨测地址是 HTTPS 时显示 TLS 配置块
+function updateProbeTls() {
+  const probeUrl = $("f_domain").value.trim() || $("f_public_url").value.trim() || $("f_internal_url").value.trim();
+  const isHttps = /^https:\/\//i.test(probeUrl);
+  $("probeTlsBlock").style.display = (isHttps && $("f_monitor").checked) ? "" : "none";
+  if (!isHttps) {
+    $("f_probe_skip_verify").checked = false;
+    $("f_probe_tls_ca").value = "";
+    toggleProbeSkip();
   }
 }
 

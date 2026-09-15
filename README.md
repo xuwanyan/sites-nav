@@ -5,7 +5,7 @@
 - **公网地址 / 内网地址 / 域名** 一卡展示，一键复制
 - 所有用户需登录；管理员可新增/编辑/删除，普通用户只读
 - 站点数据落地单个 JSON 文件（备份即复制），用户与权限存 MySQL
-- **HTTP 拨测**：站点勾选「加入监控」即自动成为 categraf `http_response` 拨测目标
+- **HTTP 拨测**：站点勾选「加入监控」即自动成为 categraf `http_response` 拨测目标，支持请求方法 / 请求头 / Body / 跟随重定向 / 私有 CA / 跳过证书校验等细粒度配置
 - **端口拨测**：独立管理页面 `/probes`，支持 TCP/UDP 连通性 + send/expect 校验
 - categraf 通过 `http_provider` 从本服务拉取两类拨测的 TOML 配置，categraf 侧零配置改动
 
@@ -21,6 +21,7 @@
                   ├─ GET  /api/probes     端口拨测列表（需管理员）
                   ├─ GET  /api/users      用户列表（需管理员）
                   ├─ GET  /api/config/http_response  categraf 配置拉取端点（Bearer token）
+                  ├─ GET  /api/config/preview   TOML 配置预览（需管理员，拨测管理页使用）
                   ├─ GET  /health         探活（会查 MySQL，不通时 503）
                   ├─ POST /api/login      登录换 token（默认 12h 有效）
                   └─ POST/PUT/DELETE       写操作（需管理员 token）
@@ -131,6 +132,23 @@ COMPOSE_PROFILES=builtin-mysql docker compose exec -T mysql sh -c \
 - 两个参数保存在站点记录中，编辑弹窗勾选「拨测监控」后可查看和修改
 - **写站点即生效**：拨测目标从站点数据实时生成，categraf 下次拉取时自动包含，无需额外同步
 
+### HTTP 拨测高级配置（对齐原 categraf-http-admin）
+
+编辑站点时勾选「拨测监控」后展开「高级拨测配置」，可配置 HTTP 拨测的细粒度参数（对齐原 categraf-http-admin 的完整能力，对应站点记录的 `probe_*` 字段）：
+
+| 字段 | 说明 | 落盘规则 |
+|------|------|----------|
+| 请求方法 | GET / POST / PUT / DELETE / HEAD | `GET` 为 categraf 默认值，其余方法显式落盘 |
+| 请求头 | 字符串数组，如 `["X-Key","val"]` | 非空时按字母序落盘为 `headers = [...]` |
+| 请求 Body | 请求体内容 | 非空时以三引号 `"""..."""` 落盘 |
+| 跟随重定向 | 默认 / 跟随 / 不跟随 | 显式选择才落盘，默认留空用 categraf 默认行为 |
+| 私有 CA | 证书路径（categraf 服务器本地路径，仅 HTTPS 地址时显示） | 与「跳过证书校验」互斥，勾选跳过时自动清空 |
+| 跳过证书校验 | ⚠️ 勾选后不校验服务端证书（仅 HTTPS 地址时显示） | 优先于私有 CA；勾选时 `tls_ca` 置空，仅落盘 `insecure_skip_verify = true` |
+
+- 仅当拨测地址（域名 / 公网 / 内网，按优先级取第一个）是 `https://` 前缀时显示 TLS 配置块
+- 拨测地址不是 HTTPS 时，自动清空跳过校验与私有 CA（避免残留无效配置）
+- `use_tls` 由后端自动推导：`跳过校验 或 私有CA非空 → use_tls = true`（对齐原 admin 的 normalizeTLS）
+
 ## 普通用户
 
 需要登录才能看（数据全部走带鉴权的 API，页面本身不含任何数据）。
@@ -150,8 +168,9 @@ sites-nav 直接作为 categraf 的 `http_provider`，同时下发两类拨测�
 
 - 探测地址优先级：**域名 > 公网地址 > 内网地址**（无 scheme 时补 `http://`）
 - 拨测 job 名 = 系统名称 + 环境后缀（`-生产环境` / `-测试环境`）
-- 期望状态码：默认 `200`，支持 `200|301` 多值
+- 期望状态码：默认 `200`，支持 `200|301` 多值；格式校验 `^\d{3}(\|\d{3})*$`
 - 超时时长：留空不设置（categraf 用默认值）
+- 细粒度配置（请求方法 / 请求头 / Body / 跟随重定向 / 私有 CA / 跳过证书校验）见上方「HTTP 拨测高级配置」
 - 取消勾选或删除系统时，拨测目标自动消失（下次 categraf 拉取时不再包含）
 
 ### 端口拨测（net_response）
@@ -200,7 +219,7 @@ systemctl restart categraf
 
 配置画像相同的目标自动合并到同一个 `[[instances]]`，`job` 名称不参与分组（放在 `[mappings]` 里逐目标打标）：
 
-- **http_response 画像**：方法 + 状态码 + 超时 + Body + 请求头 + TLS
+- **http_response 画像**：方法 + 状态码 + 超时 + Body + 请求头 + TLS + 跟随重定向
 - **net_response 画像**：协议 + 连接超时 + read_timeout + send + expect
 
 默认值不落盘：`protocol = "tcp"`、`method = "GET"` 等与 categraf 默认行为一致的配置会自动省略。`expect_response_status_codes` 始终显式落盘（categraf 不配时不做任何状态码检查）。
@@ -208,6 +227,8 @@ systemctl restart categraf
 ### 配置版本
 
 `version` 是全部目标内容的 MD5 哈希（现场计算、不落盘），内容不变则 version 不变，categraf 不会误重启采集实例。
+
+> 生成器带版本盐 `schema:v2|`：TOML 生成逻辑变更（如新增字段）时递增，强制 categraf 重新拉取配置。
 
 ## 升级
 
@@ -248,8 +269,8 @@ python scripts/migrate_users.py data/users.json              # 正式导入
 如果之前用 categraf-http-admin 管理拨测目标：
 
 1. 在 sites-nav 的 `.env` 中配置 `CATEGRAF_TOKEN`（可与原 admin 的 token 相同）
-2. 端口拨测目标：从原 admin 的 `targets.json` 中提取 `kind=net` 的记录，在 `/probes` 页面逐个添加
-3. HTTP 拨测目标：在 sites-nav 的站点卡片上勾选「加入监控」，参数与原 admin 中一致
+2. 端口拨测目标：从原 admin 的 `targets.json` 中提取 `kind=net` 的记录，在 `/probes` 页面逐个添加（该页面可预览生成的 TOML 配置）
+3. HTTP 拨测目标：在 sites-nav 的站点卡片上勾选「加入监控」；原 admin 中的细粒度参数（请求方法 / 请求头 / Body / 跟随重定向 / 私有 CA / 跳过证书校验）在站点编辑弹窗的「高级拨测配置」中按原值填写
 4. 更新 categraf `config.toml` 的 `remote_url` 指向 sites-nav 的 `/api/config/http_response`
 5. 删除本地 `conf/input.http_response/`、`conf/input.net_response/` 中的同名目标
 6. 重启 categraf，停掉 categraf-http-admin 服务
