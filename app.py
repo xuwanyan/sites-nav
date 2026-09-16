@@ -726,6 +726,49 @@ def _site_to_http_target(site: dict) -> dict | None:
     return target
 
 
+def _pick_probe_addr(site: dict) -> str:
+    """从连接串提取 host:port，用于端口拨测。无法提取返回空串。
+    支持格式：host:port / scheme://[user:pass@]host:port[/path]"""
+    conn = (site.get("connection") or "").strip()
+    if not conn:
+        return ""
+    import re
+    # 已经是 host:port 格式
+    if re.match(r"^[a-zA-Z0-9._-]+:\d+$", conn):
+        return conn
+    # scheme://[user:pass@]host:port[/path]
+    if "://" in conn:
+        from urllib.parse import urlparse
+        u = urlparse(conn)
+        if u.hostname and u.port:
+            return f"{u.hostname}:{u.port}"
+    return ""
+
+
+def _site_to_net_target(site: dict) -> dict | None:
+    """站点 → 端口拨测目标（monitor=true 且无 URL 但有 connection 才生成）。
+    从连接串自动提取 host:port，协议默认 TCP，共享 probe_timeout。"""
+    if not site.get("monitor"):
+        return None
+    # 有 URL 的站点走 HTTP 拨测，不在这里重复
+    if _pick_probe_url(site):
+        return None
+    addr = _pick_probe_addr(site)
+    if not addr:
+        return None
+    timeout = (site.get("probe_timeout") or "").strip()
+    target = {
+        "id": site["id"],
+        "kind": KIND_NET,
+        "url": addr,
+        "job": _probe_job(site),
+        "protocol": "tcp",
+    }
+    if timeout:
+        target["timeout"] = timeout
+    return target
+
+
 def _parse_probe_headers(raw) -> list[str]:
     """解析请求头 JSON 数组。非法 JSON 或非字符串数组抛 ValueError（对齐 Go 版 targetFromForm）"""
     if not raw:
@@ -825,15 +868,20 @@ def _load_mutate_probes(fn) -> list:
 
 
 def _all_probe_targets() -> list[dict]:
-    """汇总所有拨测目标：HTTP（站点生成）+ 端口（独立管理）"""
+    """汇总所有拨测目标：HTTP（有 URL 的站点）+ 端口（connection 站点 + probes.json 独立管理）"""
     sites = _load()
-    http_targets = []
+    targets = []
     for s in sites:
+        # 有 URL → HTTP 拨测；无 URL 有 connection → 端口拨测
         t = _site_to_http_target(s)
         if t:
-            http_targets.append(t)
+            targets.append(t)
+        else:
+            t = _site_to_net_target(s)
+            if t:
+                targets.append(t)
     net_targets = _load_probes()
-    return http_targets + net_targets
+    return targets + net_targets
 
 
 # ── categraf Bearer token 认证 ──
@@ -1138,21 +1186,24 @@ def create_site(site: SiteIn, authorization: str | None = Header(default=None)):
 
 
 def _validate_site_payload(data: dict) -> None:
-    """校验创建/更新站点的最小字段：URL 或连接串至少填一个；勾选拨测必须有 URL；拨测参数格式合法"""
+    """校验创建/更新站点的最小字段：URL 或连接串至少填一个；勾选拨测必须有 URL 或连接串。
+    有 URL → HTTP 拨测（校验状态码/headers 等细粒度字段）；只有 connection → 端口拨测（不需 HTTP 字段）"""
     if not any((data.get(k) or "").strip() for k in ("domain", "public_url", "private_url", "connection")):
         raise HTTPException(status_code=400, detail="域名/公网/内网/连接串至少填一个")
     if data.get("monitor"):
-        if not any((data.get(k) or "").strip() for k in ("domain", "public_url", "private_url")):
-            raise HTTPException(status_code=400, detail="勾选拨测监控需要至少填一个 URL 地址")
-        # 校验期望状态码格式
-        codes_err = validate_status_codes(data.get("probe_status_codes", ""))
-        if codes_err:
-            raise HTTPException(status_code=400, detail=codes_err)
-        # 校验请求头 JSON 数组格式（对齐 Go 版 targetFromForm 的报错）
-        try:
-            _parse_probe_headers(data.get("probe_headers") or "")
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        has_url = any((data.get(k) or "").strip() for k in ("domain", "public_url", "private_url"))
+        has_conn = bool((data.get("connection") or "").strip())
+        if not has_url and not has_conn:
+            raise HTTPException(status_code=400, detail="勾选拨测监控需要至少填一个 URL 地址或连接串")
+        # HTTP 拨测的细粒度校验只在有 URL 时做（端口拨测不需要 method/headers/body/status_codes）
+        if has_url:
+            codes_err = validate_status_codes(data.get("probe_status_codes", ""))
+            if codes_err:
+                raise HTTPException(status_code=400, detail=codes_err)
+            try:
+                _parse_probe_headers(data.get("probe_headers") or "")
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
     # TLS 字段归一化：跳过校验与私有 CA 互斥（跳过优先，清空 CA），无论是否勾选拨测都统一处理
     _normalize_probe_tls(data)
 

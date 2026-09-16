@@ -568,7 +568,7 @@
       <div id="connField" style="display:none;">
         <div class="form-group">
           <label>连接串</label>
-          <input type="text" id="f_connection" placeholder="如 redis://10.0.1.5:6379/0">
+          <input type="text" id="f_connection" placeholder="如 redis://10.0.1.5:6379/0" oninput="updateMonitorBtn()">
           <div id="connHint" style="font-size:11px; color:#8c8c8c; margin-top:4px;"></div>
         </div>
       </div>
@@ -581,12 +581,12 @@
         <label>拨测监控</label>
         <label style="display:flex; align-items:center; gap:8px; font-weight:400; cursor:pointer;">
           <input type="checkbox" id="f_monitor" style="width:auto;" onchange="toggleProbeParams()">
-          <span>加入 categraf 自动拨测（域名优先探测）</span>
+          <span>加入 categraf 自动拨测（URL 走 HTTP 拨测，连接串走端口拨测）</span>
         </label>
-        <div id="monitorHint" style="font-size:11px; color:#8c8c8c; margin-top:4px;">仅当填了 URL 地址（域名/公网/内网）时可用；连接串形式的资源不支持拨测</div>
+        <div id="monitorHint" style="font-size:11px; color:#8c8c8c; margin-top:4px;">填入 URL 地址或连接串后可启用拨测监控</div>
       </div>
       <div class="form-row" id="probeParamsRow" style="display:none;">
-        <div class="form-group">
+        <div class="form-group" id="probeCodesGroup">
           <label>期望状态码</label>
           <input type="text" id="f_probe_codes" placeholder="200，多个用 | 分隔">
         </div>
@@ -1542,10 +1542,12 @@ async function saveSite(btn) {
       showToast("域名/公网/内网/连接串至少填一个", "error"); return;
     }
     if (data.monitor) {
-      if (!data.domain && !data.public_url && !data.private_url) {
-        showToast("勾选拨测监控需要至少填一个 URL 地址", "error"); return;
+      const hasUrl = data.domain || data.public_url || data.private_url;
+      if (!hasUrl && !data.connection) {
+        showToast("勾选拨测监控需要至少填一个 URL 地址或连接串", "error"); return;
       }
-      if (!validProbeParams(data.probe_status_codes, data.probe_timeout, data.probe_headers)) return;
+      // HTTP 拨测需要校验状态码/headers；端口拨测只需校验超时
+      if (!validProbeParams(hasUrl ? data.probe_status_codes : "", data.probe_timeout, hasUrl ? data.probe_headers : "")) return;
     }
     if (id) {
       await api(`/api/sites/${id}`, { method: "PUT", body: JSON.stringify(data) });
@@ -1593,31 +1595,34 @@ function onKindChange() {
   updateMonitorBtn();
 }
 
-// 拨测按钮联动：仅在有 URL 时可勾选（HTTP 拨测的硬前提）
+// 拨测按钮联动：有 URL → HTTP 拨测（完整配置）；无 URL 有连接串 → 端口拨测（仅超时）
 function updateMonitorBtn() {
   const hasUrl = $("f_domain").value.trim() || $("f_public_url").value.trim() || $("f_internal_url").value.trim();
-  const preset = $("f_kind").value;
-  const isConnOnly = (preset !== "" && preset !== "网站"); // 缓存/MQ/数据库/存储
+  const hasConn = $("f_connection").value.trim();
   const monitorCb = $("f_monitor");
   const paramsRow = $("probeParamsRow");
-  // 拨测功能始终可用：monitor=true 的站点自动成为 categraf 拨测目标
-  $("monitorHint").textContent = "仅当填了 URL 地址（域名/公网/内网）时可用；连接串形式的资源不支持拨测";
-  if (isConnOnly) {
-    // 预设的非 URL 类型强制不加入
-    monitorCb.checked = false;
-    monitorCb.disabled = true;
-    monitorCb.style.opacity = ".5";
-    paramsRow.style.display = "none";
-    $("probeAdvBlock").style.display = "none";
-  } else if (hasUrl) {
+  const codesGroup = $("probeCodesGroup");
+  if (hasUrl) {
+    // HTTP 拨测：完整配置（状态码 + 超时 + 高级）
     monitorCb.disabled = false;
     monitorCb.style.opacity = "1";
+    $("monitorHint").textContent = "HTTP 拨测：探测 URL 状态码和响应";
+    codesGroup.style.display = "";
     paramsRow.style.display = monitorCb.checked ? "" : "none";
     $("probeAdvBlock").style.display = monitorCb.checked ? "" : "none";
+  } else if (hasConn) {
+    // 端口拨测：从连接串提取 host:port 做 TCP 连通性检测
+    monitorCb.disabled = false;
+    monitorCb.style.opacity = "1";
+    $("monitorHint").textContent = "端口拨测：从连接串自动提取 host:port 做 TCP 连通性检测";
+    codesGroup.style.display = "none";  // 端口拨测不需要状态码
+    paramsRow.style.display = monitorCb.checked ? "" : "none";
+    $("probeAdvBlock").style.display = "none";  // 端口拨测不需要 HTTP 高级配置
   } else {
     monitorCb.checked = false;
     monitorCb.disabled = true;
     monitorCb.style.opacity = ".5";
+    $("monitorHint").textContent = "填入 URL 地址或连接串后可启用拨测监控";
     paramsRow.style.display = "none";
     $("probeAdvBlock").style.display = "none";
   }
