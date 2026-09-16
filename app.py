@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Literal
 
 import pymysql
-import requests
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, field_validator
@@ -169,6 +168,15 @@ class SiteIn(BaseModel):
         p = urlparse(u)
         if p.scheme not in ("http", "https") or not p.netloc:
             raise ValueError("URL 格式不合法，应为 http(s)://host[/path]")
+        return v
+
+    @field_validator("probe_body", mode="before")
+    @classmethod
+    def _reject_body_control_chars(cls, v):
+        """拒绝 probe_body 控制字符（< 0x20）：防 TOML 解析失败导致全部目标拨测中断"""
+        v = v.strip() if isinstance(v, str) else v
+        if isinstance(v, str) and any(ord(c) < 32 for c in v):
+            raise ValueError("Body 含非法控制字符")
         return v
 
     @field_validator("connection", "kind", "category", "name", "owner", "remark", mode="before")
@@ -1403,9 +1411,7 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
                 "probe_insecure_skip_verify": item_data.get("probe_insecure_skip_verify", False),
                 "probe_tls_ca": item_data.get("probe_tls_ca", ""),
             }).model_dump()
-            # 与创建/更新路径同一条校验线。之前导入漏掉这步，两条防线都能被批量导入绕过：
-            #   1. 勾选拨测但只有连接串（无 URL）→ 记录 monitor=true 却永远无可探测地址
-            #   2. SSRF 防护 _assert_public_url → 可把拨测指向内网/环回地址
+            # 与创建/更新路径同一条校验线：勾选拨测必须有 URL 或连接串，格式校验一致
             _validate_site_payload(validated)
             parsed.append(validated)
         except HTTPException as exc:

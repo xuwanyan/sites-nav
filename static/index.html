@@ -1302,10 +1302,10 @@ function updateAdminUI() {
 }
 
 // ==================== 批量导入 / 导出 ====================
-const CSV_PLACEHOLDER = `系统名称,资源类型,分类,域名,公网地址,内网地址,连接串,负责人,环境标识,备注,拨测监控,拨测状态码,拨测超时
-GitLab,网站,代码仓库,gitlab.company.com,https://git.company.com,http://10.0.0.10:8080,,张三,生产环境,SSO 登录,是,200|301,3s
-Redis-主库,缓存,中间件,,,,redis://10.0.1.5:6379/0,李四,生产环境,主从架构,否,,
-Kafka,消息队列,中间件,,,,10.0.3.4:9092,王五,生产环境,,否,,`;
+const CSV_PLACEHOLDER = `系统名称,资源类型,分类,域名,公网地址,内网地址,连接串,负责人,环境标识,备注,拨测监控,拨测状态码,拨测超时,拨测方法,拨测请求头,拨测Body,跟随重定向,跳过证书校验,私有CA路径
+GitLab,网站,代码仓库,gitlab.company.com,https://git.company.com,http://10.0.0.10:8080,,张三,生产环境,SSO 登录,是,200|301,3s,GET,"[""X-Custom-Token"",""abc123""]",,false,false,
+Redis-主库,缓存,中间件,,,,redis://10.0.1.5:6379/0,李四,生产环境,主从架构,是,,,,,,,,
+Kafka,消息队列,中间件,,,,10.0.3.4:9092,王五,生产环境,,是,,,,,,,,`;
 
 const JSON_PLACEHOLDER = `[
   {
@@ -1496,12 +1496,25 @@ function openEditSite(siteId) {
   }
   onKindChange();
   toggleProbeParams();
+  // 记住初始值做脏检查：只改复选框（如"跳过证书校验"）时 _hasSiteContent 感知不到，
+  // 靠快照 diff 才能拦住"关掉弹框改动静默丢失"
+  _editBaseline = _readSiteFields();
   $("siteModal").classList.add("show");
 }
 
+let _editBaseline = null;   // 编辑模式打开时的初始值快照，用于关闭前脏检查
+
 function closeSiteModal() {
-  // 新增模式下有内容就存草稿，下次打开接着填；编辑模式不存（内容由记录决定）
-  if (!$("editSiteId").value && _hasSiteContent()) siteDraft = _readSiteFields();
+  if ($("editSiteId").value) {
+    // 编辑模式：内容已改过就确认，防改动静默丢失（文本框 + 两个复选框）
+    if (_editBaseline && JSON.stringify(_readSiteFields()) !== JSON.stringify(_editBaseline)) {
+      if (!confirm("有未保存的修改，确定放弃吗？")) return;
+    }
+    _editBaseline = null;
+  } else if (_hasSiteContent()) {
+    // 新增模式：有内容存草稿，下次打开接着填
+    siteDraft = _readSiteFields();
+  }
   $("siteModal").classList.remove("show");
 }
 
@@ -1559,6 +1572,7 @@ async function saveSite(btn) {
     // 已落库：清草稿并重置表单。必须先重置再 closeSiteModal ——
     // closeSiteModal 在「新增模式 + 表单有内容」时会存草稿，顺序反了会把刚保存的内容又存成草稿
     siteDraft = null;
+    _editBaseline = null;   // 已落库，清脏检查快照，否则关闭弹框会误报"有未保存修改"
     _applySiteFields({});
     closeSiteModal();
     await loadSites();

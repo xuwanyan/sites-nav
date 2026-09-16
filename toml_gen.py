@@ -138,7 +138,12 @@ def generate_http_toml(targets: list[dict]) -> str:
             quoted = ", ".join(_toml_quote(h) for h in sorted(p["headers"]))
             lines.append(f"headers = [{quoted}]")
         if p["body"]:
-            lines.append(f'body = """\n{p["body"]}\n"""')
+            # 多行基本字符串（可读）。但多行字符串内不能出现三引号，
+            # 且末尾反斜杠会变成行续符，所以含三引号或以 \ 结尾时回退单行 quoted string
+            if '"""' in p["body"] or p["body"].endswith("\\"):
+                lines.append(f'body = {_toml_quote(p["body"])}')
+            else:
+                lines.append(f'body = """\n{p["body"]}\n"""')
         # follow_redirects：显式设置才落盘，留空用 categraf 默认值
         if p["follow_redirects"] is not None:
             lines.append(f'follow_redirects = {"true" if p["follow_redirects"] else "false"}')
@@ -227,10 +232,13 @@ def generate_net_toml(targets: list[dict]) -> str:
 # ── TOML 字符串转义 ──
 
 def _toml_quote(s: str) -> str:
-    """TOML 双引号字符串转义"""
-    # 替换顺序：先 \ 再 " 再控制字符
+    """TOML 双引号字符串转义（对齐 Go fmt.Sprintf("%q", s)）。
+    转义所有不可打印字符（< 0x20）为 \\uXXXX，补齐 \\b \\f。"""
     s = s.replace("\\", "\\\\").replace('"', '\\"')
     s = s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    s = s.replace("\b", "\\b").replace("\f", "\\f")
+    # 其余控制字符（< 0x20，已处理 \n\r\t\b\f 的剩余）统一转义
+    s = "".join(c if ord(c) >= 32 else f"\\u{ord(c):04x}" for c in s)
     return f'"{s}"'
 
 
@@ -264,7 +272,7 @@ def config_version(targets: list[dict]) -> str:
             t.get("send", ""),
             t.get("expect", ""),
             t.get("body", ""),
-            json.dumps(headers, ensure_ascii=False) if headers else "",
+            json.dumps(sorted(headers), ensure_ascii=False) if headers else "",
             str(t.get("follow_redirects")),
         ]
         h.update("|".join(parts).encode("utf-8"))

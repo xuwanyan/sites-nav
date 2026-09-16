@@ -259,7 +259,7 @@ do_deploy() {
     echo "🚀 构建并启动 sites-nav..."
     # build 与 up 分开，且 up 带 --force-recreate。
     # 原来用 `up -d --build`：镜像重建没问题，但 up 对"配置没变化"的服务会跳过重建，
-    # .env 的改动不一定被当成配置变化 —— 而 CATEGRAF_ADMIN_* / MYSQL_* 等变量是
+    # .env 的改动不一定被当成配置变化 —— 而 CATEGRAF_TOKEN / MYSQL_* 等变量是
     # 进程启动时一次性读入的，容器不重建就永远是旧值。踩过的坑：.env 明明改对了、
     # 容器里的 printenv 也有值，前端却还显示未配置。
     # --force-recreate 保证每次部署都用新镜像 + 新 env。

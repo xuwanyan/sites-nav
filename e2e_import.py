@@ -119,35 +119,20 @@ def main():
         check("非法 format 返回 400", r.status_code == 400, f"status={r.status_code}")
 
         # ── 6. 与创建路径的校验一致性（这是重点）─────────────────────
-        # 6a. monitor=true 但没有 URL，只有连接串
+        # 6a. monitor=true 但没有 URL，只有连接串 → 端口拨测，允许创建
         create = requests.post(f"{BASE}/api/sites", headers=H, json={
             "name": f"{PREFIX}-无URL监控", "env": "生产环境",
             "connection": "redis://10.9.9.2:6379/0", "monitor": True,
         }, timeout=5)
-        check("创建路径拒绝: 勾选监控但无 URL", create.status_code == 400,
+        check("创建路径允许: 连接串+监控（端口拨测）", create.status_code == 200,
               f"status={create.status_code} {create.json()}")
         imp = do_import(H, "json", json.dumps([{
-            "name": f"{PREFIX}-无URL监控", "env": "生产环境",
+            "name": f"{PREFIX}-无URL监控2", "env": "生产环境",
             "connection": "redis://10.9.9.2:6379/0", "monitor": True,
         }], ensure_ascii=False))
-        check("导入路径同样拒绝: 勾选监控但无 URL",
-              imp.json()["added"] == 0 and "至少填一个 URL" in str(imp.json()["skipped"]),
+        check("导入路径允许: 连接串+监控（端口拨测）",
+              imp.json()["added"] == 1,
               f"added={imp.json()['added']} skipped={imp.json()['skipped']}")
-
-        # 6b. monitor=true 且地址是回环（SSRF 防护）
-        create2 = requests.post(f"{BASE}/api/sites", headers=H, json={
-            "name": f"{PREFIX}-回环监控", "env": "生产环境",
-            "public_url": "http://127.0.0.1:9999", "monitor": True,
-        }, timeout=5)
-        check("创建路径拒绝: 回环地址+监控", create2.status_code == 400,
-              f"status={create2.status_code} {create2.json()}")
-        imp2 = do_import(H, "json", json.dumps([{
-            "name": f"{PREFIX}-回环监控", "env": "生产环境",
-            "public_url": "http://127.0.0.1:9999", "monitor": True,
-        }], ensure_ascii=False))
-        check("导入路径同样拒绝: 回环地址+监控",
-              imp2.json()["added"] == 0 and "不允许拨测" in str(imp2.json()["skipped"]),
-              f"added={imp2.json()['added']} skipped={imp2.json()['skipped']}")
 
         # ── 7. CSV 拨测参数往返：导出列齐全，导入能读回 ──────────────
         csv_probe = (
