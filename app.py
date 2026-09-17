@@ -140,6 +140,8 @@ class SiteIn(BaseModel):
     # 拨测参数：留空用默认（状态码 200、GET、不设置超时）；状态码多个用 | 分隔，超时如 3s/500ms/1m（纯数字自动按秒）
     probe_status_codes: str = Field(default="", pattern=r"^(\d{3}(\|\d{3})*)?$")
     probe_timeout: str = Field(default="", pattern=r"^(\d+(ms|s|m))?$")
+    # 探测间隔：留空用 categraf 全局默认；如 30s/500ms/1m（纯数字自动按秒）
+    probe_interval: str = Field(default="", pattern=r"^(\d+(ms|s|m))?$")
     # 细粒度拨测配置（对齐原 categraf-http-admin）：方法/请求头/Body/跟随重定向/私有 CA/跳过证书校验
     probe_method: str = Field(default="", pattern=r"^(|GET|POST|PUT|DELETE|HEAD)$")
     probe_headers: str = Field(default="", max_length=2000)  # JSON 数组字符串，如 ["X-Key","val"]
@@ -153,7 +155,7 @@ class SiteIn(BaseModel):
     probe_send: str = Field(default="", max_length=500)  # 发送内容，\r \n \t 用转义写法
     probe_expect: str = Field(default="", max_length=500)  # 期望响应包含
 
-    @field_validator("probe_timeout", "probe_read_timeout", mode="before")
+    @field_validator("probe_timeout", "probe_read_timeout", "probe_interval", mode="before")
     @classmethod
     def _norm_probe_timeout(cls, v):
         """超时时长纯数字自动按秒补单位（3 -> 3s），防止漏写 s"""
@@ -254,6 +256,7 @@ FIELD_DEFAULTS = {
     "monitor": False,
     "probe_status_codes": "",
     "probe_timeout": "",
+    "probe_interval": "",
     "probe_method": "",
     "probe_headers": "",
     "probe_body": "",
@@ -957,6 +960,7 @@ def _site_to_http_target(site: dict) -> dict | None:
         return None
     codes = (site.get("probe_status_codes") or "").strip() or "200"
     timeout = (site.get("probe_timeout") or "").strip()
+    interval = (site.get("probe_interval") or "").strip()
     skip_verify = bool(site.get("probe_insecure_skip_verify"))
     tls_ca = "" if skip_verify else (site.get("probe_tls_ca") or "").strip()
     target = {
@@ -976,6 +980,8 @@ def _site_to_http_target(site: dict) -> dict | None:
     }
     if timeout:
         target["response_timeout"] = timeout
+    if interval:
+        target["interval"] = interval
     return target
 
 
@@ -1077,6 +1083,9 @@ def _site_to_net_target(site: dict) -> dict | None:
         "job": _probe_job(site),
         "protocol": protocol,
     }
+    interval = (site.get("probe_interval") or "").strip()
+    if interval:
+        target["interval"] = interval
     # 字段名不同（站点带 probe_ 前缀），非空才写，让 TOML 走 categraf 默认值
     for src, dst in (("probe_timeout", "timeout"), ("probe_read_timeout", "read_timeout"),
                      ("probe_send", "send"), ("probe_expect", "expect")):
@@ -1740,6 +1749,7 @@ def _normalize_import_row(row: dict, idx: int) -> dict:
         # 拨测参数：留空即默认（状态码 200、不设超时），与 _export_csv 的列一一对应
         "probe_status_codes": str(row.get("probe_status_codes") or row.get("拨测状态码") or "").strip(),
         "probe_timeout": str(row.get("probe_timeout") or row.get("拨测超时") or "").strip(),
+        "probe_interval": str(row.get("probe_interval") or row.get("探测间隔") or "").strip(),
         # 细粒度拨测配置（与创建/更新路径一致）
         "probe_method": str(row.get("probe_method") or row.get("拨测方法") or "").strip(),
         "probe_headers": str(row.get("probe_headers") or row.get("拨测请求头") or "").strip(),
@@ -1751,7 +1761,7 @@ def _normalize_import_row(row: dict, idx: int) -> dict:
 
     # 表格占位符归一为空。不处理 name / env / monitor（有独立校验，不能变空）
     for k in ("category", "kind", "owner", "remark", "domain", "public_url", "private_url",
-              "connection", "probe_status_codes", "probe_timeout", "probe_method",
+              "connection", "probe_status_codes", "probe_timeout", "probe_interval", "probe_method",
               "probe_headers", "probe_body", "probe_tls_ca"):
         result[k] = _blank_if_placeholder(result[k])
     return result
@@ -1859,9 +1869,9 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
 def _export_csv(sites: list) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    header_cn = ["系统名称", "资源类型", "分类", "域名", "公网地址", "内网地址", "连接串", "负责人", "环境标识", "备注", "拨测监控", "拨测状态码", "拨测超时", "拨测方法", "拨测请求头", "拨测Body", "跟随重定向", "跳过证书校验", "私有CA路径"]
+    header_cn = ["系统名称", "资源类型", "分类", "域名", "公网地址", "内网地址", "连接串", "负责人", "环境标识", "备注", "拨测监控", "拨测状态码", "拨测超时", "探测间隔", "拨测方法", "拨测请求头", "拨测Body", "跟随重定向", "跳过证书校验", "私有CA路径"]
     writer.writerow(header_cn)
-    key_map = ["name", "kind", "category", "domain", "public_url", "private_url", "connection", "owner", "env", "remark", "monitor", "probe_status_codes", "probe_timeout", "probe_method", "probe_headers", "probe_body", "probe_follow_redirects", "probe_insecure_skip_verify", "probe_tls_ca"]
+    key_map = ["name", "kind", "category", "domain", "public_url", "private_url", "connection", "owner", "env", "remark", "monitor", "probe_status_codes", "probe_timeout", "probe_interval", "probe_method", "probe_headers", "probe_body", "probe_follow_redirects", "probe_insecure_skip_verify", "probe_tls_ca"]
     for s in sites:
         row = []
         for k in key_map:
