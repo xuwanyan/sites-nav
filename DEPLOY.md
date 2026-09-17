@@ -280,7 +280,7 @@ server {
 
 **必须单进程单实例**：不要 `--workers N`、不要 `replicas > 1`、不要多容器。
 
-原因：`TOKEN_SECRET` 是进程内生成的（`app.py` 顶层 `secrets.token_hex(32)`），多进程各自一个 secret → 刚登录的 token 会被随机打到不认它的进程上，表现为"刷新一下登录就掉了"。`_login_attempts`、`_sync_status` 也都是进程内 dict，多进程间不共享。
+原因：`TOKEN_SECRET` 是进程内生成的（`app.py` 顶层 `secrets.token_hex(32)`），多进程各自一个 secret → 刚登录的 token 会被随机打到不认它的进程上，表现为"刷新一下登录就掉了"。`_login_attempts` 也是进程内 dict，多进程间不共享（登录限速失效）。
 
 单用户运维场景，单进程完全够用。
 

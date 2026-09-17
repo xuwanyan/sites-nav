@@ -5,20 +5,22 @@ import functools
 import hashlib
 import hmac
 import io
+import ipaddress
 import json
 import os
+import re
 import secrets
 import sys
 import threading
 import time
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 import pymysql
-import requests
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -63,16 +65,18 @@ TOKEN_SECRET = secrets.token_hex(32)
 # 会话有效期：.env 的 TOKEN_TTL_HOURS，默认 12 小时；非法值回退 12h
 TOKEN_TTL = int(os.environ.get("TOKEN_TTL_HOURS", "12") or "12") * 3600
 
-# 拨测联动（categraf-http-admin）：不配置 CATEGRAF_ADMIN_URL 时功能整体关闭
-CATEGRAF_ADMIN_URL = os.environ.get("CATEGRAF_ADMIN_URL", "").rstrip("/")
-CATEGRAF_ADMIN_USER = os.environ.get("CATEGRAF_ADMIN_USER", "admin")
-CATEGRAF_ADMIN_PASS = os.environ.get("CATEGRAF_ADMIN_PASS", "")
+# ── categraf http_provider ──
+# CATEGRAF_TOKEN：categraf 拉取配置用的 Bearer token（必配；不设则端点拒绝一切拉取请求）
+# 与登录账密解耦：登录密码只用于 Web 页面，categraf config.toml 里只放这个 token
+CATEGRAF_TOKEN = os.environ.get("CATEGRAF_TOKEN", "")
 
-# 同步结果内存态：site_id -> {"ok": bool, "message": str, "time": str}，重启即清零
-_sync_status: dict = {}
+# 拨测目标存储文件（端口拨测独立管理；HTTP 拨测从站点 monitor 字段动态生成）
+PROBES_FILE = DATA_DIR / "probes.json"
+PROBES_BACKUP = DATA_DIR / "probes.json.bak"
 
 # 数据文件读写锁：防止并发请求读改写丢数据（RLock 允许 _load 内部调用 _save）
 _file_lock = threading.RLock()
+_probes_lock = threading.RLock()
 
 # ── 用户与权限存储：MySQL ──
 # 站点数据仍在 data/sites.json（单文件，备份即复制）；用户/角色/启用状态在 MySQL。
@@ -133,11 +137,23 @@ class SiteIn(BaseModel):
     env: Literal["生产环境", "测试环境"]  # 环境必填，且只允许生产环境/测试环境
     remark: str = Field(default="", max_length=500)
     monitor: bool = False
-    # 拨测参数：留空用默认（状态码 200、不设置超时）；状态码多个用 | 分隔，超时如 3s/500ms/1m（纯数字自动按秒）
+    # 拨测参数：留空用默认（状态码 200、GET、不设置超时）；状态码多个用 | 分隔，超时如 3s/500ms/1m（纯数字自动按秒）
     probe_status_codes: str = Field(default="", pattern=r"^(\d{3}(\|\d{3})*)?$")
     probe_timeout: str = Field(default="", pattern=r"^(\d+(ms|s|m))?$")
+    # 细粒度拨测配置（对齐原 categraf-http-admin）：方法/请求头/Body/跟随重定向/私有 CA/跳过证书校验
+    probe_method: str = Field(default="", pattern=r"^(|GET|POST|PUT|DELETE|HEAD)$")
+    probe_headers: str = Field(default="", max_length=2000)  # JSON 数组字符串，如 ["X-Key","val"]
+    probe_body: str = Field(default="", max_length=4000)
+    probe_follow_redirects: bool | None = None  # None=用 categraf 默认；显式 true/false 才落盘
+    probe_insecure_skip_verify: bool = False  # 跳过证书校验（与 tls_ca 互斥，跳过优先）
+    probe_tls_ca: str = Field(default="", max_length=500)  # 私有 CA 证书路径（categraf 服务器本地路径）
+    # 端口拨测参数：只在「无 URL + 有 connection」时生效（有 URL 走 HTTP 拨测，这几个字段被忽略）
+    probe_protocol: str = Field(default="tcp", pattern=r"^(tcp|udp)$")  # 协议
+    probe_read_timeout: str = Field(default="", pattern=r"^(\d+(ms|s|m))?$")  # 只有 expect 时才有意义
+    probe_send: str = Field(default="", max_length=500)  # 发送内容，\r \n \t 用转义写法
+    probe_expect: str = Field(default="", max_length=500)  # 期望响应包含
 
-    @field_validator("probe_timeout", mode="before")
+    @field_validator("probe_timeout", "probe_read_timeout", mode="before")
     @classmethod
     def _norm_probe_timeout(cls, v):
         """超时时长纯数字自动按秒补单位（3 -> 3s），防止漏写 s"""
@@ -146,20 +162,48 @@ class SiteIn(BaseModel):
             return f"{v}s"
         return v
 
+    @field_validator("probe_send", "probe_expect", mode="before")
+    @classmethod
+    def _reject_send_expect_control_chars(cls, v):
+        """拒绝真实控制字符：send/expect 里要表达 \r \n \t 用字面转义写法，
+        落库时由 _validate_site_payload 还原（与旧的 /api/probes 同一套口径）"""
+        v = v.strip() if isinstance(v, str) else v
+        if isinstance(v, str) and any(ord(c) < 32 for c in v):
+            raise ValueError("发送/期望内容含非法控制字符，请写 \\r \\n \\t")
+        return v
+
     @field_validator("public_url", "private_url", "domain", mode="before")
     @classmethod
-    def _norm_url_field(cls, v):
-        """URL 字段：拒绝控制字符和引号（防止 attribute 注入），校验 http(s):// + netloc"""
+    def _norm_url_field(cls, v, info: ValidationInfo):
+        """URL 字段：拒绝控制字符和引号（防 attribute 注入），校验 scheme/netloc、
+        主机名合法性，以及 IP 归属（域名不填 IP；公网/内网各放各的）"""
         v = (v or "").strip()
         if not v:
             return v
+        if v in _PLACEHOLDERS:
+            raise ValueError(f"该字段是占位符 {v}，请留空或填真实地址")
         if any(c.isspace() or c in '"\'<>`' for c in v):
             raise ValueError("URL 含非法字符（空格/引号/尖括号）")
-        from urllib.parse import urlparse
-        u = v if v.startswith(("http://", "https://")) else "http://" + v
-        p = urlparse(u)
+        # 先走主机名/端口校验：它对括号内不合法的 IPv6 会吞掉 urlparse 的异常，
+        # 自己在这里 urlparse 就会把 http://[::1 变成 500 而不是 422
+        host_err = _url_host_error(v)
+        if host_err:
+            raise ValueError(host_err)
+        p = urlparse(_with_scheme(v))
         if p.scheme not in ("http", "https") or not p.netloc:
             raise ValueError("URL 格式不合法，应为 http(s)://host[/path]")
+        ip_err = _ip_field_error(info.field_name, v)
+        if ip_err:
+            raise ValueError(ip_err)
+        return v
+
+    @field_validator("probe_body", mode="before")
+    @classmethod
+    def _reject_body_control_chars(cls, v):
+        """拒绝 probe_body 控制字符（< 0x20）：防 TOML 解析失败导致全部目标拨测中断"""
+        v = v.strip() if isinstance(v, str) else v
+        if isinstance(v, str) and any(ord(c) < 32 for c in v):
+            raise ValueError("Body 含非法控制字符")
         return v
 
     @field_validator("connection", "kind", "category", "name", "owner", "remark", mode="before")
@@ -171,6 +215,29 @@ class SiteIn(BaseModel):
             if any(ord(c) < 32 for c in v):
                 raise ValueError("字段含非法控制字符")
         return v
+
+    @model_validator(mode="after")
+    def _check_url_fields_distinct(self):
+        """域名/公网/内网不能指向同一个地址。
+
+        同一地址填进两个字段：拨测时会产生两个不同的 job 去拨同一个目标，界面上还
+        会显示两条几乎一样的记录，用户看不出为什么重复。归一化后比较（去 scheme、
+        去默认端口，见 _norm_url），所以这些都算同一个：
+          "x.example.com" / "http://x.example.com" / "http://x.example.com/"
+          "http://x:3208"   / "https://x:3208"
+          "http://x:80"     / "http://x"
+        """
+        labels = {"domain": "域名", "public_url": "公网地址", "private_url": "内网地址"}
+        seen: dict[str, str] = {}
+        for field, label in labels.items():
+            n = _norm_url(getattr(self, field))
+            if not n:
+                continue
+            if n in seen:
+                raise ValueError(
+                    f"{label} 与 {seen[n]} 重复：{n}（域名/公网/内网不能指向同一个地址）")
+            seen[n] = label
+        return self
 
 
 FIELD_DEFAULTS = {
@@ -187,6 +254,16 @@ FIELD_DEFAULTS = {
     "monitor": False,
     "probe_status_codes": "",
     "probe_timeout": "",
+    "probe_method": "",
+    "probe_headers": "",
+    "probe_body": "",
+    "probe_follow_redirects": None,
+    "probe_insecure_skip_verify": False,
+    "probe_tls_ca": "",
+    "probe_protocol": "tcp",
+    "probe_read_timeout": "",
+    "probe_send": "",
+    "probe_expect": "",
     "created_at": "",
     "updated_at": "",
 }
@@ -628,196 +705,225 @@ def _require_admin(authorization: str | None) -> dict:
     return user
 
 
-# ── categraf-http-admin 拨测联动 ──
+# ── categraf http_provider：拨测目标管理与配置下发 ──
+#
+# sites-nav 直接作为 categraf 的 http_provider：
+# - HTTP 拨测目标：从站点数据动态生成（monitor=true 的站点自动成为拨测目标）
+# - 端口拨测目标：独立存储在 data/probes.json，通过 API 在线管理
+# - categraf 通过 GET /api/config/http_response 拉取两类拨测的 TOML 配置
+#
+# 原 categraf-http-admin 的同步逻辑（登录/对账/重试）已全部移除，
+# 改为"写站点即生效"模式：拨测目标实时从站点数据生成，无需中间同步。
 
-_monitor_session_lock = threading.Lock()
-_monitor_session: requests.Session | None = None
+from toml_gen import (
+    KIND_HTTP,
+    KIND_NET,
+    config_version,
+    generate_http_toml,
+    generate_net_toml,
+    validate_status_codes,
+)
 
 
-class MonitorAuthError(RuntimeError):
-    """拨测管理端账密不匹配（admin 返回 302 但未下发 ccsid cookie）。
-    独立异常类型而非靠匹配错误消息文本：文案改了分类不会静默失效。"""
+_URL_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*://")
 
 
-def _monitor_enabled() -> bool:
-    return bool(CATEGRAF_ADMIN_URL and CATEGRAF_ADMIN_PASS)
+def _with_scheme(v: str) -> str:
+    """补上缺失的 scheme。判断大小写不敏感——否则 HTTP://x 会被当成主机名 HTTP，
+    后面跟的一大段变成 path，整条地址就废了。"""
+    return v if v.lower().startswith(("http://", "https://")) else "http://" + v
+
+
+def _split_netloc(netloc: str) -> tuple[str, str]:
+    """拆出 (host, port)。port 保留原文，越界/非数字也不丢。
+
+    与前端 splitUrl 是同一套写法：查重口径一旦分叉，重复值就漏网（见测试）。
+    调用方已去掉 userinfo。"""
+    if netloc.startswith("["):
+        end = netloc.find("]")
+        host = netloc[1:end] if end >= 0 else ""
+        tail = netloc[end + 1:]
+        port = tail[1:] if tail.startswith(":") else ""
+        return host, port
+    ci = netloc.find(":")
+    return (netloc, "") if ci < 0 else (netloc[:ci], netloc[ci + 1:])
+
+
+def _split_url(v: str) -> tuple[str, str, str]:
+    """http(s) 地址 -> (host, port, 去掉 userinfo 的 netloc)。
+
+    解析失败（括号内 IPv6 不合法）返回 ("", "", "")，由调用方决定报错还是退化。"""
+    try:
+        netloc = urlparse(_with_scheme(v)).netloc
+    except ValueError:
+        return "", "", ""
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]
+    host, port = _split_netloc(netloc)
+    return host, port, netloc
+
+
+def _ip_field_error(field: str, v: str) -> str:
+    """IP 填错字段时的错误信息；相符、或不是 IP 字面量返回空串。
+
+    域名框只放域名；公网/内网各放各的 IP。放错之后两个字段各生成一个拨测 job，
+    指向同一台机器，运维看不出为什么重复。"""
+    host = _split_url(v)[0]
+    kind = _classify_ip(host)
+    if kind is None:
+        return ""
+    if field == "domain":
+        return f"域名不能填 IP 地址（{host}），请填到 公网地址 / 内网地址"
+    if field == "public_url" and kind == "internal":
+        return f"公网地址不能填内网 IP（{host}），请填到 内网地址"
+    if field == "private_url" and kind == "public":
+        return f"内网地址不能填公网 IP（{host}），请填到 公网地址"
+    return ""
 
 
 def _norm_url(v: str) -> str:
-    """归一化用于比对：补 scheme、转小写、去尾斜杠"""
+    """归一化用于比对：转小写、去 scheme、去默认端口、去尾斜杠。
+
+    去 scheme 是有意的：http://x:3208 与 https://x:3208 是同一个服务（同 host:port），
+    当成两条会生成两个 job 去拨同一个目标；默认端口同理（http://x:80 与 http://x、
+    https://x:443 与 https://x）。这只影响查重；拨测地址本身由 _pick_probe_url 用原值
+    生成，scheme 和端口在那条链路上都不丢。
+    端口保留原文（越界的 :320802 也要带着），不然会和"无端口"的写法撞成假重复。
+    绝不抛异常：历史脏数据里的 http://[1:::2]:8080 会让 urlparse 直接 ValueError，
+    而这里对每条已存记录都要跑一遍（建查重索引 / 出配置），不能让它拖垮接口。
+    """
     v = (v or "").strip().lower()
     if not v:
         return ""
-    if not v.startswith(("http://", "https://")):
+    if not _URL_SCHEME_RE.match(v):
         v = "http://" + v
-    return v.rstrip("/")
-
-
-def _assert_public_url(url: str) -> None:
-    """拒绝内网/环回/链路本地地址作为拨测目标（防 SSRF 探测内网服务）"""
-    from urllib.parse import urlparse
-    from ipaddress import ip_address
-    u = url if "://" in url else "http://" + url
-    p = urlparse(u)
-    if p.scheme not in ("http", "https"):
-        return  # 非 http(s)，不在拨测范围内，无需检查
-    host = p.hostname or ""
-    if not host:
-        return
     try:
-        ip = ip_address(host)
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-            raise HTTPException(
-                status_code=400,
-                detail=f"不允许拨测内网/环回/链路本地地址：{host}",
-            )
+        p = urlparse(v)
+        path = v.split("://", 1)[1][len(p.netloc):]
     except ValueError:
-        # 非 IP，可能是域名 —— 放行（admin 应自行评估域名指向）
-        pass
+        return v.rstrip("/")          # 括号内 IPv6 不合法：退化成字面比较
+    netloc = p.netloc
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]
+    host, port = _split_netloc(netloc)
+    if not host:
+        return v.rstrip("/")          # 解析不出主机（最常见是 IPv6 漏了方括号）
+    if (p.scheme, port) in (("http", "80"), ("https", "443")):
+        port = ""
+    return f"{host}{(':' + port if port else '')}{path}".rstrip("/")
 
 
-def _delete_target_with_retry(sess, tid: str, *, max_attempts: int = 3) -> bool:
-    """带指数退避的目标删除：瞬时失败重试，成功或终态失败都返回 True/False。
-    失败不静默吞掉，由调用方收集后写 _sync_status"""
-    import requests as _req
-    for attempt in range(max_attempts):
-        try:
-            r = sess.delete(f"{CATEGRAF_ADMIN_URL}/api/targets/{tid}", timeout=5)
-            if r.status_code in (200, 404):
-                return True
-            if r.status_code in (429, 500, 502, 503, 504):
-                time.sleep(0.5 * (2 ** attempt))
-                continue
-            return False  # 其他 4xx：终态失败
-        except _req.RequestException:
-            time.sleep(0.5 * (2 ** attempt))
-    return False
+# 表格里表示「无此值」的占位符。这些值过去会被原样存进 URL / 连接串字段，
+# 变成永远解析不出地址的拨测目标（例如 public_url="-"），而 "N/A" 更隐蔽：
+# urlparse 在 "/" 处切开，主机名会变成单字母 "N"，校验全部通过。
+# 导入时统一归一为空；表单里手输则报明确的错，不静默吃掉。
+_PLACEHOLDERS = {
+    "-", "--", "---", "—", "–", "／", "/", "\\", "*", "×",
+    "无", "暂无", "无。", "空白", "N/A", "n/a",
+    "None", "none", "null", "NULL", "nil",
+}
 
 
-def _candidate_urls(site: dict) -> set:
-    """该系统所有可能注册过拨测的地址（域名/公网/内网）"""
-    return {_norm_url(site.get(k)) for k in ("domain", "public_url", "private_url")} - {""}
+def _blank_if_placeholder(v: str) -> str:
+    s = (v or "").strip()
+    return "" if s in _PLACEHOLDERS else s
 
 
-def _dedupe_targets(sess, targets: list, related_urls: set) -> list:
-    """同步前对账去重：只清理与当前系统候选地址相关的重复目标。
-    - 同 URL 多条 → 保留第一条，其余删除
-    - 同 job 且地址同属该系统 → 保留第一条，其余删除
-    其他系统的目标绝不触碰。返回清理后的目标列表"""
-    related = {_norm_url(u) for u in related_urls} - {""}
-    seen_url, seen_job, remove_ids = set(), set(), set()
-    kept = []
-    for t in targets:
-        u = _norm_url(t.get("url") or "")
-        if u not in related:
-            kept.append(t)
-            continue
-        j = t.get("job") or ""
-        if u in seen_url or (j and j in seen_job):
-            remove_ids.add(t["id"])
-            continue
-        seen_url.add(u)
-        if j:
-            seen_job.add(j)
-        kept.append(t)
-    for tid in remove_ids:
-        try:
-            sess.delete(f"{CATEGRAF_ADMIN_URL}/api/targets/{tid}", timeout=5)
-        except requests.RequestException:
-            pass
-    return kept
-
-
-def _monitor_login() -> requests.Session:
-    """登录 categraf-http-admin 拿 session cookie，全局复用直到失效重登"""
-    global _monitor_session
-    with _monitor_session_lock:
-        if _monitor_session is not None:
-            return _monitor_session
-        sess = requests.Session()
-        r = sess.post(
-            f"{CATEGRAF_ADMIN_URL}/login",
-            data={"username": CATEGRAF_ADMIN_USER, "password": CATEGRAF_ADMIN_PASS},
-            timeout=5,
-            allow_redirects=False,
-        )
-        # admin 未启用认证时不提供 /login(405)，API 本身开放，直接用无 cookie 会话
-        if r.status_code == 405:
-            _monitor_session = sess
-            return sess
-        # 成功只有一种形态：302 且下发了 ccsid cookie。
-        # 账密错时 admin 同样返回 302（跳 /login?error=1）但不发 cookie，
-        # 所以必须看 cookie 而非状态码 —— 只报「HTTP 302」会让人以为 302 代表成功。
-        if r.status_code == 302 and "ccsid" in sess.cookies:
-            _monitor_session = sess
-            return sess
-        if r.status_code == 302:
-            raise MonitorAuthError(
-                "拨测管理端账密错误：admin 返回 302 但未下发 ccsid cookie，"
-                "请核对 .env 的 CATEGRAF_ADMIN_PASS 是否等于 admin 的 CONFIG_PASS"
-            )
-        raise RuntimeError(f"拨测管理端登录异常(HTTP {r.status_code})，请检查 CATEGRAF_ADMIN_URL 是否可达")
-
-
-# 拨测管理端探测结果缓存（30s TTL）+ 后台探测。
-# /api/monitor-config 每次页面加载都会调，所以它必须瞬时返回；真发探测
-# （要向 admin POST 一次 /login，timeout=5 含建连+读取，最坏 ~10s）放后台线程，
-# 接口只回最后已知状态。探测结果本身对 UI 提示而言 30s 足够新鲜。
-_MONITOR_STATE_TTL = 30.0
-_monitor_state_cache = {"state": "", "detail": "", "at": 0.0}
-_monitor_probe_inflight = False
-_monitor_probe_guard = threading.Lock()
-
-
-def _probe_monitor_state() -> None:
-    """向 admin 发一次登录探测，结果写入 _monitor_state_cache。仅由后台线程调用。
-
-    state 取值：
-      off         —— env 未配齐（URL 或 PASS 为空）
-      ok          —— 配齐且登录通过
-      unreachable —— 配齐但连不上 / 服务端异常
-      auth_failed —— 配齐但账密不匹配
-
-    未配置时不探测（没配置没必要去打 admin）。已持有 session 时 _monitor_login
-    直接返回缓存会话，探测开销为零 —— 代价是 admin 事后宕机探测不出来，
-    那种失败会落到卡片的同步状态里，同样可见。
-    """
-    if not _monitor_enabled():
-        _monitor_state_cache.update(
-            {"state": "off", "detail": "缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS", "at": time.time()}
-        )
-        return
+# IP 字面量校验用 ipaddress 模块，不自己写正则：
+# 正则 \d{1,3} 会放过 999.1.1.1 / 256.0.0.1 这类每段超界的地址。
+def _is_valid_ip(host: str) -> bool:
     try:
-        _monitor_login()
-        state, detail = "ok", ""
-    except MonitorAuthError as exc:
-        state, detail = "auth_failed", str(exc)
-    except requests.RequestException as exc:
-        state, detail = "unreachable", f"拨测管理端不可达：{exc}"
-    except RuntimeError as exc:
-        state, detail = "unreachable", str(exc)
-    except Exception as exc:  # noqa: BLE001 探测失败不该让配置接口整体 500
-        state, detail = "unreachable", f"拨测管理端探测异常：{exc}"
-    _monitor_state_cache.update({"state": state, "detail": detail, "at": time.time()})
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
 
 
-def _schedule_monitor_probe() -> None:
-    """缓存过期或缺失时触发后台探测。已有探测在跑就不重复起线程。"""
-    global _monitor_probe_inflight
-    with _monitor_probe_guard:
-        if _monitor_probe_inflight:
-            return
-        _monitor_probe_inflight = True
+# 内网地址段：RFC 1918 三段 + 环回 + 链路本地；IPv6 的 ULA/环回/链路本地同样算内网。
+# 100.64.0.0/10（运营商级 NAT）没算进来——它公网不可路由，但也不算传统内网，
+# 环境里真在用的话往这个列表加一行就行。
+_INTERNAL_NETS = [
+    ipaddress.ip_network(n) for n in (
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+        "127.0.0.0/8", "169.254.0.0/16",
+        "::/128", "::1/128", "fc00::/7", "fe80::/9",
+    )
+]
 
-    def _run():
-        global _monitor_probe_inflight
-        try:
-            _probe_monitor_state()
-        finally:
-            with _monitor_probe_guard:
-                _monitor_probe_inflight = False
 
-    threading.Thread(target=_run, daemon=True).start()
+def _classify_ip(host: str) -> str | None:
+    """IP 归属：'internal' / 'public'；不是 IP 字面量返回 None。
+
+    域名一律返回 None：校验时发 DNS 请求既慢又不稳定，还会拖慢整个保存动作，
+    所以域名在公网/内网两个字段里都放行（填错的位置靠人眼判断）。
+    IPv4 映射的 IPv6（::ffff:10.0.0.1）按内嵌的 IPv4 判定；fe80::1%eth0 先剥掉 zone。
+    """
+    try:
+        ip = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return None
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    nets = [n for n in _INTERNAL_NETS if n.version == ip.version]
+    return "internal" if any(ip in n for n in nets) else "public"
+
+
+def _url_host_error(v: str) -> str:
+    """校验 URL 里的主机名和端口是否合法。合法返回空串，否则返回错误信息。
+
+    原来只校验 netloc 非空，会放过一堆根本连不通的写法，而且这些脏值进了库之后
+    会变成拨测目标，运维分不清是配置错还是网络不通：
+      "." / ".." / "a..b.com"     —— 空标签，DNS 解析必然失败
+      "-bad.com" / "bad-.com"     —— 标签不能以连字符开头或结尾
+      "中文.example.com"          —— 非 ASCII；categraf 不做 IDNA 转换
+      "999.1.1.1" / "256.0.0.1"   —— IP 每段超界（手写正则拦不住，交给 ipaddress）
+      "1.2.3.4.5" / "192.168.1"   —— 既不是合法域名也不是合法 IP
+      ":320802" / ":abc"          —— 端口越界或非数字（见 _validate_host_port 的同款口径）
+      http://::1:8080             —— IPv6 漏了方括号
+    """
+    try:
+        return _url_host_error_checked(v)
+    except ValueError:
+        # urlparse 对括号内不合法的 IPv6 直接抛异常（http://[1:::2]:8080、http://[::1）
+        # 必须接住：一条脏输入不能 500 掉整个接口
+        return f"URL 格式不合法：{v}（请检查括号内 IPv6 的写法，如 http://[::1]:8080）"
+
+
+def _url_host_error_checked(v: str) -> str:
+    # 这里直接 urlparse 而不是走 _split_url：urlparse 对括号内不合法的 IPv6 会抛异常
+    # （http://[::1、http://[1:::2]:8080），得让它冒到 _url_host_error 去换成具体提示
+    p = urlparse(_with_scheme(v))
+    netloc = p.netloc
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]  # 跳过 userinfo，只看 host:port
+    if not netloc:
+        return "URL 格式不合法，应为 http(s)://host[/path]"
+    host, port = _split_netloc(netloc)
+    if not host:
+        # netloc 非空却拆不出主机，最常见是 IPv6 漏了方括号
+        return "URL 格式不合法：IPv6 地址需加方括号，如 http://[::1]:8080"
+    if port and not _port_ok(port):
+        # 用 netloc 原文判断而不是 p.port：urlparse 对 http://a:1:2 会当成 host=a
+        # port=2 悄悄丢掉一段，拨测连的端口就和你填的不是一个
+        return f"端口不合法：{port}（应为 1-65535 之间的数字）"
+    # IP 字面量：含冒号，或不含字母（"1.2.3.4.5" / "192.168.1" / "123" 都在这里拦住）。
+    # 判定交给 ipaddress，自己写正则只会放过超界的段。
+    if ":" in host or not any(c.isalpha() for c in host):
+        if not _is_valid_ip(host):
+            return f"IP 地址不合法：{host}（请检查格式，IPv4 每段需在 0-255 范围内）"
+        return ""
+    if not host.isascii():
+        return f"域名含非 ASCII 字符：{host}（请改用 punycode 写法，如 xn-- 开头）"
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+        return f"域名含非法字符：{host}（只允许字母、数字、点和连字符）"
+    if host.startswith(".") or host.endswith("."):
+        return f"域名不能以点开头或结尾：{host}"
+    for label in host.split("."):
+        if not label:
+            return f"域名含空标签：{host}（不能有连续的点）"
+        if label.startswith("-") or label.endswith("-"):
+            return f"域名标签不能以连字符开头或结尾：{label}"
+    return ""
 
 
 def _pick_probe_url(site: dict) -> str:
@@ -830,145 +936,463 @@ def _pick_probe_url(site: dict) -> str:
     return url
 
 
-# 环境标识 -> 拨测 job 名称后缀（仅生产环境/测试环境映射，其他环境不加后缀）
+# 环境标识 -> 拨测 job 名称后缀
 _ENV_SUFFIX = {"生产环境": "-生产环境", "测试环境": "-测试环境"}
 
 
-def _env_suffixed(name: str, env: str) -> str:
-    """[已废弃] 站点名称自动带环境后缀。
-    自方案A起站点名称不再带后缀（便于按 name 聚合双环境分组卡），
-    拨测 job 名由 _probe_job 用 name + env 拼接。保留仅供一次性迁移引用。"""
-    suffix = _ENV_SUFFIX.get(env or "", "")
-    if not suffix or "生产" in name or "测试" in name:
-        return name
-    return f"{name}{suffix}"
-
-
 def _probe_job(site: dict) -> str:
-    """拨测 job 名 = 站点名称 + 环境后缀（与站点名称分离，站点页保持干净名称）"""
+    """拨测 job 名 = 站点名称 + 环境后缀"""
     name = (site.get("name") or "").strip()
     env = (site.get("env") or "").strip()
     suffix = _ENV_SUFFIX.get(env, "")
     return f"{name}{suffix}" if suffix else name
 
 
-def _register_probe(site: dict, stale_urls: set | None = None) -> None:
+def _site_to_http_target(site: dict) -> dict | None:
+    """站点 → HTTP 拨测目标（monitor=true 且有效地址才生成）"""
+    if not site.get("monitor"):
+        return None
     url = _pick_probe_url(site)
     if not url:
-        raise RuntimeError("没有可用的域名/公网/内网地址")
-    job = _probe_job(site)
+        return None
     codes = (site.get("probe_status_codes") or "").strip() or "200"
     timeout = (site.get("probe_timeout") or "").strip()
-    sess = _monitor_login()
-    stale = {_norm_url(u) for u in (stale_urls or [])} - {""} - {_norm_url(url)}
-
-    targets = sess.get(f"{CATEGRAF_ADMIN_URL}/api/targets", timeout=5).json().get("targets", [])
-    # 先对账去重：清理与当前系统相关的重复目标（同URL/同job），再执行注册逻辑
-    targets = _dedupe_targets(sess, targets, {_norm_url(url)} | stale | _candidate_urls(site))
-    # 换过地址时只清理旧地址目标；当前地址目标保留，避免抹掉手动配置
-    # 失败收集（不静默吞掉），写入 _sync_status 让用户可见
-    stale_failures = 0
-    for t in targets:
-        if _norm_url(t.get("url")) in stale:
-            if not _delete_target_with_retry(sess, t["id"]):
-                stale_failures += 1
-    existing = next((t for t in targets if _norm_url(t.get("url")) == _norm_url(url)), None)
-
-    if existing is None:
-        payload = {"kind": "http", "url": url, "job": job, "expected_status_codes": codes}
-        if timeout:
-            payload["response_timeout"] = timeout
-        r = sess.post(f"{CATEGRAF_ADMIN_URL}/api/targets", json=payload, timeout=5)
-        if r.status_code != 200:
-            detail = ""
-            try:
-                detail = r.json().get("error", "")
-            except ValueError:
-                pass
-            # session 过期等情况：清掉缓存强制下次重登（旧 session 显式关闭，避免连接池泄漏）
-            global _monitor_session
-            with _monitor_session_lock:
-                old, _monitor_session = _monitor_session, None
-            if old is not None:
-                try:
-                    old.close()
-                except Exception:
-                    pass
-            raise RuntimeError(f"注册拨测失败(HTTP {r.status_code}) {detail}")
-        msg = f"已加入拨测：{url}"
-        if stale_failures:
-            msg += f"（旧地址 {stale_failures} 个清理失败）"
-        _sync_status[site["id"]] = {"ok": stale_failures == 0, "message": msg, "time": _now()}
-        return
-
-    # 目标已存在：job/状态码/超时与站点配置一致则跳过；否则合并更新
-    # 超时留空 = 保留目标上已有的手动配置，不抹掉
-    need_update = (
-        existing.get("job") != job
-        or existing.get("expected_status_codes") != codes
-        or (bool(timeout) and existing.get("response_timeout") != timeout)
-    )
-    if not need_update:
-        _sync_status[site["id"]] = {"ok": True, "message": f"拨测已是最新：{url}（{job}）", "time": _now()}
-        return
-    payload = dict(existing)
-    payload["kind"] = "http"
-    payload["url"] = url
-    payload["job"] = job
-    payload["expected_status_codes"] = codes
+    skip_verify = bool(site.get("probe_insecure_skip_verify"))
+    tls_ca = "" if skip_verify else (site.get("probe_tls_ca") or "").strip()
+    target = {
+        "id": site["id"],
+        "kind": KIND_HTTP,
+        "url": url,
+        "job": _probe_job(site),
+        "method": (site.get("probe_method") or "").strip() or "GET",
+        "expected_status_codes": codes,
+        "headers": _parse_probe_headers(site.get("probe_headers") or ""),
+        "body": site.get("probe_body") or "",
+        "follow_redirects": site.get("probe_follow_redirects"),
+        # use_tls 由是否需要 TLS 配置块自动推导（对齐 Go 版 normalizeTLS）
+        "use_tls": skip_verify or bool(tls_ca),
+        "tls_ca": tls_ca,
+        "insecure_skip_verify": skip_verify,
+    }
     if timeout:
-        payload["response_timeout"] = timeout
-    r = sess.post(
-        f"{CATEGRAF_ADMIN_URL}/api/targets/{existing['id']}/edit",
-        json=payload,
-        timeout=5,
-    )
-    if r.status_code == 200:
-        msg = f"拨测已更新：{job} → {url}"
-        if stale_failures:
-            msg += f"（旧地址 {stale_failures} 个清理失败）"
-        _sync_status[site["id"]] = {"ok": stale_failures == 0, "message": msg, "time": _now()}
-    else:
-        raise RuntimeError(f"更新拨测失败(HTTP {r.status_code})")
+        target["response_timeout"] = timeout
+    return target
 
 
-def _remove_probe(site: dict, extra_urls: set | None = None) -> None:
-    """按该系统所有候选地址（+额外指定的历史地址）逐个清理拨测目标。
-    失败收集后写入 _sync_status，不静默吞掉"""
-    urls = (_candidate_urls(site) | {_norm_url(u) for u in (extra_urls or [])}) - {""}
-    if not urls:
-        return
-    sess = _monitor_login()
-    targets = sess.get(f"{CATEGRAF_ADMIN_URL}/api/targets", timeout=5).json().get("targets", [])
-    failures = 0
-    for t in targets:
-        if _norm_url(t.get("url")) in urls:
-            if not _delete_target_with_retry(sess, t["id"]):
-                failures += 1
-    if failures:
-        _sync_status[site["id"]] = {"ok": False, "message": f"{failures} 个拨测目标删除失败", "time": _now()}
+def _has_url(rec: dict) -> bool:
+    """域名/公网/内网任一非空 → 走 HTTP 拨测；否则有 connection 时走端口拨测。
+    判断"会不会产生端口拨测目标"必须用它，不能只看 connection 是否为空"""
+    return any((rec.get(k) or "").strip() for k in ("domain", "public_url", "private_url"))
 
 
-def _sync_probe_async(site: dict, action: str, extra_urls: set | None = None) -> None:
-    """后台执行拨测同步；未启用或失败都不影响主流程，只记状态"""
+def _port_ok(port) -> bool:
+    """端口是否合法（1-65535）。0 保留给特权进程、探测它没有意义，也不放行。"""
+    try:
+        return 1 <= int(port) <= 65535
+    except (TypeError, ValueError):
+        return False
 
-    def _run():
+
+def _extract_host_port(value: str) -> str:
+    """从 'host:port' 或 'scheme://[user:pass@]host:port[/path]' 提取 host:port。
+    提取不到、端口非法都返回空串，**绝不抛异常**：
+    urlparse().port 在端口越界或非数字时会抛 ValueError，而这个函数会被
+    /api/config/http_response 对每条记录调用一次 —— 一条脏数据就能让整个
+    配置端点 500，所有拨测目标一起消失。"""
+    v = (value or "").strip()
+    if not v:
+        return ""
+    import re
+    m = re.match(r"^[a-zA-Z0-9._-]+:(\d+)$", v)
+    if m:
+        return v if _port_ok(m.group(1)) else ""
+    if "://" in v:
         try:
-            if action == "register":
-                if not _monitor_enabled():
-                    _sync_status[site["id"]] = {"ok": False, "message": "拨测联动未配置(CATEGRAF_ADMIN_URL)", "time": _now()}
-                    return
-                # 就地调和：只清理换掉的旧地址，当前地址目标保留手动配置
-                _register_probe(site, stale_urls=extra_urls)
-            else:
-                if _monitor_enabled():
-                    _remove_probe(site, extra_urls)
-                _sync_status.pop(site["id"], None)
-        except Exception as exc:  # noqa: BLE001 后台任务兜底，不让线程崩
-            if action == "register":
-                _sync_status[site["id"]] = {"ok": False, "message": str(exc), "time": _now()}
+            u = urlparse(v)
+            host, port = u.hostname, u.port
+        except ValueError:
+            return ""
+        if host and _port_ok(port):
+            return f"{host}:{port}"
+    return ""
 
-    threading.Thread(target=_run, daemon=True).start()
+
+def _pick_probe_addr(site: dict) -> str:
+    """从连接串提取 host:port，用于端口拨测。无法提取返回空串。"""
+    return _extract_host_port(site.get("connection") or "")
+
+
+def _connection_port_error(connection: str) -> str:
+    """连接串里的端口越界/格式非法时返回错误信息，否则返回空串。
+    在写入时拦住，而不是等生成 TOML 时才发现问题。"""
+    import re
+    c = (connection or "").strip()
+    if not c:
+        return ""
+    # 无 scheme 的裸 host:port 形态：端口段必须是 1-65535 的数字。
+    # 原来只匹配 \d+，"10.0.0.5:abc" 两个分支都不命中 → 静默存库，而且永远产出
+    # 不了拨测目标，用户看不出"这个资源根本没在被监测"。
+    # 用 partition 而不是整串正则，"10.0.0.5:abc:1" 这种多冒号的也能抓到。
+    # 主机名部分不在合法字符集内的（自由格式连接串）不拦，避免误伤。
+    if "://" not in c and ":" in c:
+        head, _, tail = c.partition(":")
+        if re.match(r"^[a-zA-Z0-9._-]+$", head):
+            port = tail.strip()
+            if not port.isdigit():
+                return f"连接串端口 {port!r} 非法（应为 1-65535 的数字）"
+            if not _port_ok(port):
+                return f"连接串端口 {port} 非法（应为 1-65535）"
+            return ""
+    if "://" in c:
+        try:
+            port = urlparse(c).port
+        except ValueError:
+            # urlparse().port 对非数字端口和越界端口都抛 ValueError
+            return f"连接串端口非法（应为 1-65535 的数字）: {c}"
+        if port is None or _port_ok(port):
+            return ""
+        return f"连接串端口 {port} 非法（应为 1-65535）"
+    return ""
+
+
+def _site_to_net_target(site: dict) -> dict | None:
+    """站点 → 端口拨测目标（monitor=true 且无 URL 但有 connection 才生成）。
+    从连接串提取 host:port；协议/超时/send/expect 走站点自己的拨测字段，
+    所以端口拨测的配置全部在站点表单里完成，不再需要独立的端口拨测管理页。"""
+    if not site.get("monitor"):
+        return None
+    # 有 URL 的站点走 HTTP 拨测，不在这里重复
+    if _pick_probe_url(site):
+        return None
+    addr = _pick_probe_addr(site)
+    if not addr:
+        return None
+    protocol = (site.get("probe_protocol") or "").strip().lower()
+    if protocol not in ("tcp", "udp"):
+        protocol = "tcp"   # 历史脏数据兜底
+    target = {
+        "id": site["id"],
+        "kind": KIND_NET,
+        "url": addr,
+        "job": _probe_job(site),
+        "protocol": protocol,
+    }
+    # 字段名不同（站点带 probe_ 前缀），非空才写，让 TOML 走 categraf 默认值
+    for src, dst in (("probe_timeout", "timeout"), ("probe_read_timeout", "read_timeout"),
+                     ("probe_send", "send"), ("probe_expect", "expect")):
+        val = (site.get(src) or "").strip()
+        if val:
+            target[dst] = val
+    return target
+
+
+def _parse_probe_headers(raw) -> list[str]:
+    """解析请求头 JSON 数组。非法 JSON 或非字符串数组抛 ValueError（对齐 Go 版 targetFromForm）"""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [str(h) for h in raw]
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise ValueError(f"请求头 JSON 格式非法: {e}")
+    if not isinstance(parsed, list) or not all(isinstance(h, str) for h in parsed):
+        raise ValueError("请求头 JSON 格式非法: 应为字符串数组，如 [\"X-Key\",\"val\"]")
+    return parsed
+
+
+def _normalize_probe_tls(data: dict) -> None:
+    """归一化 TLS 字段（对齐 Go 版 normalizeTLS）：跳过校验与 CA 互斥（跳过优先，清空 CA）"""
+    data["probe_tls_ca"] = (data.get("probe_tls_ca") or "").strip()
+    if data.get("probe_insecure_skip_verify"):
+        data["probe_tls_ca"] = ""
+
+
+# ── 端口拨测目标存储（data/probes.json）──
+
+
+class ProbeIn(BaseModel):
+    """端口拨测目标输入模型"""
+    url: str = Field(min_length=1, max_length=200)  # host:port
+    job: str = Field(min_length=1, max_length=100)
+    protocol: str = Field(default="tcp", pattern=r"^(tcp|udp)$")
+    timeout: str = Field(default="", pattern=r"^(\d+(ms|s|m))?$")
+    read_timeout: str = Field(default="", pattern=r"^(\d+(ms|s|m))?$")
+    send: str = Field(default="", max_length=500)
+    expect: str = Field(default="", max_length=500)
+
+
+def _load_probes_unlocked() -> list[dict]:
+    """无锁加载：调用方必须已持有 _probes_lock"""
+    if not PROBES_FILE.exists():
+        return []
+    try:
+        raw = json.loads(PROBES_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        # 主文件损坏：尝试从备份恢复
+        if PROBES_BACKUP.exists():
+            try:
+                raw = json.loads(PROBES_BACKUP.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                return []
+        else:
+            return []
+    if not isinstance(raw, list):
+        return []
+    # 确保每条记录有合法 id
+    result = []
+    for item in raw:
+        if isinstance(item, dict) and item.get("url"):
+            if not isinstance(item.get("id"), str) or len(item.get("id", "")) != 8:
+                item["id"] = secrets.token_hex(4)
+            result.append(item)
+    return result
+
+
+def _load_probes() -> list[dict]:
+    """加载端口拨测目标列表"""
+    with _probes_lock:
+        return _load_probes_unlocked()
+
+
+def _save_probes_unlocked(probes: list[dict]) -> None:
+    """无锁保存：调用方必须已持有 _probes_lock"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if PROBES_FILE.exists():
+        try:
+            PROBES_BACKUP.write_bytes(PROBES_FILE.read_bytes())
+        except OSError:
+            pass
+    tmp = PROBES_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(probes, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, PROBES_FILE)
+
+
+def _save_probes(probes: list[dict]) -> None:
+    """保存端口拨测目标列表（带备份轮转）"""
+    with _probes_lock:
+        _save_probes_unlocked(probes)
+
+
+def _load_mutate_probes(fn) -> list:
+    """原子读-改-写：fn(probes) 原地修改列表。fn 抛 HTTPException 时不写入。
+    与站点 _load_mutate 同模式：防止 _load_probes→_save_probes 之间被并发请求覆盖。"""
+    with _probes_lock:
+        probes = _load_probes_unlocked()
+        fn(probes)
+        _save_probes_unlocked(probes)
+        return probes
+
+
+def _all_probe_targets() -> list[dict]:
+    """汇总所有拨测目标：HTTP（有 URL 的站点）+ 端口（connection 站点 + probes.json 独立管理）"""
+    sites = _load()
+    targets = []
+    for s in sites:
+        # 有 URL → HTTP 拨测；无 URL 有 connection → 端口拨测
+        t = _site_to_http_target(s)
+        if t:
+            targets.append(t)
+        else:
+            t = _site_to_net_target(s)
+            if t:
+                targets.append(t)
+    net_targets = _load_probes()
+    return targets + net_targets
+
+
+# ── categraf Bearer token 认证 ──
+
+
+def _require_categraf_token(authorization: str | None = Header(default=None)) -> None:
+    """categraf http_provider 拉取端点的 Bearer token 认证。
+    未配 CATEGRAF_TOKEN 时拒绝一切拉取请求（fail closed，防止配置意外裸露）。
+    常量时间比较防时序侧信道。"""
+    if not CATEGRAF_TOKEN:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    token = authorization[7:]
+    if not hmac.compare_digest(token.encode(), CATEGRAF_TOKEN.encode()):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+# ── categraf http_provider 端点 ──
+
+
+@app.get("/api/config/http_response")
+def categraf_config(authorization: str | None = Header(default=None)):
+    """categraf http_provider 配置拉取端点。
+    同一个 URL 同时下发 http_response 和 net_response 两个插件配置。
+    version 是全部目标内容的 MD5 哈希，内容不变则 version 不变，
+    categraf 不会误重启采集实例。"""
+    _require_categraf_token(authorization)
+    targets = _all_probe_targets()
+    version = config_version(targets)
+    return {
+        "version": version,
+        "configs": {
+            "http_response": {
+                version: {
+                    "config": generate_http_toml(targets),
+                    "format": "toml",
+                }
+            },
+            "net_response": {
+                version: {
+                    "config": generate_net_toml(targets),
+                    "format": "toml",
+                }
+            },
+        },
+    }
+
+
+# ── 端口拨测目标 CRUD API（管理员）──
+
+
+@app.get("/api/config/preview")
+def config_preview(authorization: str | None = Header(default=None)):
+    """给管理页面预览当前生成的 TOML 配置（对齐原 categraf-http-admin 首页的 TOML 展示）"""
+    _require_admin(authorization)
+    targets = _all_probe_targets()
+    return {
+        "version": config_version(targets),
+        "http_toml": generate_http_toml(targets),
+        "net_toml": generate_net_toml(targets),
+    }
+
+
+@app.get("/api/probes")
+def list_probes(authorization: str | None = Header(default=None)):
+    """查看所有端口拨测目标"""
+    _require_admin(authorization)
+    return _load_probes()
+
+
+def _site_net_addrs() -> dict[str, str]:
+    """站点派生出的端口拨测目标：host:port(小写) -> 站点名称。
+    忽略 monitor 开关：开关随时可以打开，一旦打开就会和独立目标在 net_response
+    里撞成重复键。有 URL 的站点走 HTTP 拨测，不产生端口目标。"""
+    out: dict[str, str] = {}
+    for s in _load():
+        if _has_url(s):
+            continue
+        addr = _pick_probe_addr(s)
+        if addr:
+            out.setdefault(addr.lower(), s.get("name") or "")
+    return out
+
+
+def _check_probe_url_site_conflict(url: str) -> None:
+    """独立端口拨测目标与站点派生出的目标撞车时返回 409。
+    同一个 host:port 在 net_response 里出现两次会产生重复的 [mappings] 键，
+    TOML 解析直接失败，后果是所有端口拨测一起中断（不是只少这一条）。
+    必须在 _load_mutate_probes 之外调用：那里已持有 _probes_lock，再调 _load()
+    会变成 probes→file 反向持锁，与 _all_probe_targets 的 file→probes 构成死锁。"""
+    name = _site_net_addrs().get(url.strip().lower())
+    if name is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"目标地址 {url} 已被站点「{name}」的连接串使用，两者会生成重复的端口拨测目标",
+        )
+
+
+@app.post("/api/probes")
+def create_probe(probe: ProbeIn, authorization: str | None = Header(default=None)):
+    """添加端口拨测目标"""
+    _require_admin(authorization)
+    data = probe.model_dump()
+    # 校验 host:port 格式
+    _validate_host_port(data["url"])
+    _check_probe_url_site_conflict(data["url"])
+    # 转义 send/expect 中的控制字符
+    data["send"] = _unescape_ctl(data["send"])
+    data["expect"] = _unescape_ctl(data["expect"])
+    data["kind"] = KIND_NET
+
+    def _mutate(probes):
+        # URL 不允许重复；job 在同类型内不允许重复
+        for p in probes:
+            if p["url"] == data["url"]:
+                raise HTTPException(status_code=409, detail=f"目标地址已存在: {data['url']}")
+            if p.get("job") == data["job"]:
+                raise HTTPException(status_code=409, detail=f"job 名称已存在: {data['job']}")
+        data["id"] = secrets.token_hex(4)
+        data["created_at"] = _now()
+        probes.append(data)
+
+    _load_mutate_probes(_mutate)
+    return data
+
+
+@app.put("/api/probes/{probe_id}")
+def update_probe(probe_id: str, probe: ProbeIn, authorization: str | None = Header(default=None)):
+    """编辑端口拨测目标"""
+    _require_admin(authorization)
+    data = probe.model_dump()
+    _validate_host_port(data["url"])
+    _check_probe_url_site_conflict(data["url"])
+    data["send"] = _unescape_ctl(data["send"])
+    data["expect"] = _unescape_ctl(data["expect"])
+    data["kind"] = KIND_NET
+
+    captured: dict = {}
+
+    def _mutate(probes):
+        idx = next((i for i, p in enumerate(probes) if p["id"] == probe_id), None)
+        if idx is None:
+            raise HTTPException(status_code=404, detail="拨测目标不存在")
+        # 检查重复（排除自身）
+        for p in probes:
+            if p["id"] != probe_id:
+                if p["url"] == data["url"]:
+                    raise HTTPException(status_code=409, detail=f"目标地址已存在: {data['url']}")
+                if p.get("job") == data["job"]:
+                    raise HTTPException(status_code=409, detail=f"job 名称已存在: {data['job']}")
+        data["id"] = probe_id
+        data["created_at"] = probes[idx].get("created_at", _now())
+        data["updated_at"] = _now()
+        probes[idx] = data
+        captured["data"] = data
+
+    _load_mutate_probes(_mutate)
+    return captured["data"]
+
+
+@app.delete("/api/probes/{probe_id}")
+def delete_probe(probe_id: str, authorization: str | None = Header(default=None)):
+    """删除端口拨测目标"""
+    _require_admin(authorization)
+
+    def _mutate(probes):
+        idx = next((i for i, p in enumerate(probes) if p["id"] == probe_id), None)
+        if idx is None:
+            raise HTTPException(status_code=404, detail="拨测目标不存在")
+        probes.pop(idx)
+
+    _load_mutate_probes(_mutate)
+    return {"ok": True}
+
+
+def _validate_host_port(url: str) -> None:
+    """校验 host:port 格式 + 端口范围。
+    原来只查格式不查范围：越界端口会落进 probes.json，categraf 拨测失败，
+    而界面上分不清是配置错还是网络不通。"""
+    import re
+    m = re.match(r"^[a-zA-Z0-9._-]+:(\d+)$", url.strip())
+    if not m:
+        raise HTTPException(
+            status_code=400,
+            detail=f"目标地址格式非法: {url}（应为 host:port，如 10.0.0.1:22）",
+        )
+    if not _port_ok(m.group(1)):
+        raise HTTPException(status_code=400, detail=f"目标地址端口 {m.group(1)} 非法（应为 1-65535）")
+
+
+def _unescape_ctl(s: str) -> str:
+    """把表单里输入的 \r \n \t 转义序列还原成真实控制字符"""
+    return s.replace("\\r", "\r").replace("\\n", "\n").replace("\\t", "\t")
 
 
 # 中国大陆自 1991 年起无夏令时，固定 UTC+8 偏移即可，不需要 tzdata。
@@ -982,33 +1406,72 @@ def _now() -> str:
     return _dt.datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _find_duplicate(sites: list, data: dict, exclude_id: str | None = None) -> str:
-    """多维查重：名称、域名/公网/内网地址（忽略大小写和结尾斜杠）。返回冲突描述，无冲突返回空"""
-    def _norm(v: str) -> str:
-        v = (v or "").strip().lower()
-        if not v:
-            return ""
-        if not v.startswith(("http://", "https://")) and ("." in v or ":" in v):
-            # 裸域名/IP 与带 scheme 的写法视为同一个
-            return "http://" + v.rstrip("/")
-        return v.rstrip("/")
+def _dup_index_entry(s: dict) -> dict:
+    """把一条记录预处理成查重用的比较键。
+
+    索引里的字段必须和 _find_duplicate 的判断一一对应，否则查重结果会分叉。"""
+    return {
+        "id": s["id"],
+        "name": (s.get("name") or "").strip().lower(),
+        "env": (s.get("env") or "").strip(),
+        "urls": {_norm_url(s.get(k)) for k in ("domain", "public_url", "private_url")} - {""},
+        "conn": (s.get("connection") or "").strip().lower(),
+        "addr": "" if _has_url(s) else _pick_probe_addr(s),
+        "display": s.get("name") or "",
+    }
+
+
+def _build_dup_index(sites: list) -> list:
+    return [_dup_index_entry(s) for s in sites]
+
+
+def _find_duplicate(sites: list, data: dict, exclude_id: str | None = None,
+                    probe_addrs: set | None = None, index: list | None = None) -> str:
+    """多维查重：名称、域名/公网/内网地址、连接串、端口拨测目标。
+    返回冲突描述，无冲突返回空串。
+
+    probe_addrs / index 都是可选的预计算结果，批量调用（导入）时传进来：
+      - index 不传则每次扫描都重新 norm URL、解析连接串，5000 行 x 2000 条要 55 秒
+      - probe_addrs 不传则每行读一次 probes.json
+    """
+    if index is None:
+        index = _build_dup_index(sites)
     name = data["name"].strip().lower()
     env = (data.get("env") or "").strip()
-    urls = {_norm(data.get(k)) for k in ("domain", "public_url", "private_url")} - {""}
+    urls = {_norm_url(data.get(k)) for k in ("domain", "public_url", "private_url")} - {""}
     conn = (data.get("connection") or "").strip().lower()
-    for s in sites:
-        if s["id"] == exclude_id:
+    # 端口拨测目标地址：只有"无 URL + 有 connection"的记录才会产生端口目标，
+    # 其 TOML 目标 key 是连接串解析出的 host:port，而不是连接串本身
+    has_url = _has_url(data)
+    data_addr = "" if has_url else _pick_probe_addr(data)
+    # 独立管理的端口拨测目标（data/probes.json）。
+    # 锁顺序 file→probes，与 _all_probe_targets 一致，不构成反向持锁。
+    if probe_addrs is None:
+        probe_addrs = {(p.get("url") or "").strip().lower() for p in _load_probes()} - {""}
+    # 与拨测管理页的独立目标撞车（与 sites 内容无关，必须在循环外）
+    if data_addr and data_addr.lower() in probe_addrs:
+        return f"端口拨测目标 {data_addr} 已被拨测管理页的独立目标占用"
+    for e in index:
+        if exclude_id is not None and e["id"] == exclude_id:
             continue
         # 同名同环境不允许重复；同名不同环境（分组卡：同站点跨环境）允许
-        if s["name"].strip().lower() == name and (s.get("env") or "").strip() == env:
-            return f"同名同环境的「{s['name']}」已存在（环境：{env or '未指定'}）"
-        other = {_norm(s.get(k)) for k in ("domain", "public_url", "private_url")} - {""}
-        hit = urls & other
+        if e["name"] == name and e["env"] == env:
+            return f"同名同环境的「{e['display']}」已存在（环境：{env or '未指定'}）"
+        hit = urls & e["urls"]
         if hit:
-            return f"地址 {next(iter(hit))} 已被「{s['name']}」使用"
-        other_conn = (s.get("connection") or "").strip().lower()
-        if conn and conn == other_conn:
-            return f"连接串已被「{s['name']}」使用"
+            return f"地址 {next(iter(hit))} 已被「{e['display']}」使用"
+        if conn and conn == e["conn"]:
+            return f"连接串已被「{e['display']}」使用"
+        # 端口拨测目标地址查重。同一个 host:port 在 net_response 里出现两次会产生
+        # 重复的 [mappings] 键，TOML 解析直接失败，后果是**所有**端口拨测一起中断，
+        # 而不是只少这一条。来源有两种，都要拦：
+        #   1) 两个站点连接串写法不同但解析出同一地址：172.16.16.78:6379 vs redis://172.16.16.78:6379
+        #      —— 上面的连接串字面比较拦不住
+        #   2) 站点连接串解析出的地址与拨测管理页的独立目标相同
+        # 有 URL 的记录走 HTTP 拨测，其目标 key 是完整 URL，不可能和 host:port 撞上，
+        # 所以 addr 为空（有 URL）时直接跳过。
+        if data_addr and e["addr"] and e["addr"].lower() == data_addr.lower():
+            return f"端口拨测目标 {data_addr} 已被「{e['display']}」使用（连接串写法不同但解析出同一个 host:port）"
     return ""
 
 
@@ -1031,6 +1494,12 @@ def index():
 def admin_page():
     # 运维登录独立入口：首页不出现任何登录入口，此地址需直接访问/收藏
     return FileResponse(BASE_DIR / "static" / "admin.html")
+
+
+@app.get("/probes")
+def probes_page():
+    """端口拨测管理页面（需登录，管理员才能操作）"""
+    return FileResponse(BASE_DIR / "static" / "probes.html")
 
 
 @app.get("/health")
@@ -1103,52 +1572,55 @@ def create_site(site: SiteIn, authorization: str | None = Header(default=None)):
 
     # 原子读-改-写：避免 _load→_save 之间被并发请求覆盖（TOCTOU）
     _load_mutate(_mutate)
-    if item["monitor"]:
-        _sync_probe_async(dict(item), "register")
+    # monitor=true 的站点自动成为拨测目标，写站点即生效，无需额外同步
     return item
 
 
-def _validate_site_payload(data: dict, *, monitor_already_on: bool = False) -> None:
-    """校验创建/更新站点的最小字段：URL 或连接串至少填一个；勾选拨测必须有 URL；拨测 URL 必须是公网地址（防 SSRF）
-
-    monitor_already_on=True 表示该条目本来就是监控状态、monitor=true 不是本次新加的勾选。
-    这个区分是必须的：前端编辑时总是把 monitor 原样带上（sitePayload），
-    如果不区分，联动后来被关掉之后，已经勾选过的站点连改个备注都会被 400 挡下。
-    """
+def _validate_site_payload(data: dict) -> None:
+    """校验创建/更新站点的最小字段：URL 或连接串至少填一个；勾选拨测必须有 URL 或连接串。
+    有 URL → HTTP 拨测（校验状态码/headers 等细粒度字段）；只有 connection → 端口拨测（不需 HTTP 字段）"""
     if not any((data.get(k) or "").strip() for k in ("domain", "public_url", "private_url", "connection")):
         raise HTTPException(status_code=400, detail="域名/公网/内网/连接串至少填一个")
-    if data.get("monitor") and not monitor_already_on:
-        # 新勾选监控但联动未配置：直接拒绝，而不是把 monitor 标记写进去。
-        # 否则站点会永久显示「已监控」，实际一个拨测任务都没建 ——
-        # 用户看到的状态和真实情况完全不符。
-        if not _monitor_enabled():
-            raise HTTPException(
-                status_code=400,
-                detail="拨测联动未配置（缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS），"
-                       "无法加入监控；请先在 .env 配好这两项并重启容器",
-            )
+    # 连接串端口越界要在写入时拦住。否则记录落库后，urlparse().port 在生成
+    # TOML 时抛 ValueError，把整个配置端点打成 500，所有拨测目标一起消失。
+    conn_err = _connection_port_error(data.get("connection") or "")
+    if conn_err:
+        raise HTTPException(status_code=400, detail=conn_err)
     if data.get("monitor"):
-        if not any((data.get(k) or "").strip() for k in ("domain", "public_url", "private_url")):
-            raise HTTPException(status_code=400, detail="勾选拨测监控需要至少填一个 URL 地址")
-        # 拨测 URL 必须是公网地址，禁止内网/环回/链路本地（SSRF 防护）
-        probe_url = _pick_probe_url(data)
-        if probe_url:
-            _assert_public_url(probe_url)
+        has_url = any((data.get(k) or "").strip() for k in ("domain", "public_url", "private_url"))
+        has_conn = bool((data.get("connection") or "").strip())
+        if not has_url and not has_conn:
+            raise HTTPException(status_code=400, detail="勾选拨测监控需要至少填一个 URL 地址或连接串")
+        # HTTP 拨测的细粒度校验只在有 URL 时做（端口拨测不需要 method/headers/body/status_codes）
+        if has_url:
+            codes_err = validate_status_codes(data.get("probe_status_codes", ""))
+            if codes_err:
+                raise HTTPException(status_code=400, detail=codes_err)
+            try:
+                _parse_probe_headers(data.get("probe_headers") or "")
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+    # TLS 字段归一化：跳过校验与私有 CA 互斥（跳过优先，清空 CA），无论是否勾选拨测都统一处理
+    _normalize_probe_tls(data)
+
+    # 还原 send/expect 里 \r \n \t 的字面转义为真实控制字符（对齐 /api/probes）。
+    # 输入校验 _reject_send_expect_control_chars 已拒收真控制字符，这里只把用户按转义写法
+    # 输入的字面文本还原，这样 categraf 收到的才是真正的回车/换行/制表。
+    data["probe_send"] = _unescape_ctl(data.get("probe_send") or "")
+    data["probe_expect"] = _unescape_ctl(data.get("probe_expect") or "")
 
 
 @app.put("/api/sites/{site_id}")
 def update_site(site_id: str, site: SiteIn, authorization: str | None = Header(default=None)):
     _require_admin(authorization)
-    # 先读一次现有记录，判断 monitor=true 是不是本次新加的勾选（见 _validate_site_payload）。
-    # 顺带让 404 在这里给出，不用等 _mutate。
-    # 这里是只读检查，可能与并发写入竞态；最坏情况是读到稍旧的 monitor 值，
-    # 只影响"是否放宽联动配置校验"这一项，不造成数据问题。
+    # 先读一次现有记录，顺带让 404 在这里给出，不用等 _mutate。
+    # 这里是只读检查，可能与并发写入竞态；不影响数据正确性（_mutate 内有最终 404 兜底）。
     existing = next((s for s in _load() if s["id"] == site_id), None)
     if existing is None:
         raise HTTPException(status_code=404, detail="条目不存在")
     data = site.model_dump()
     data["name"] = (data.get("name") or "").strip()
-    _validate_site_payload(data, monitor_already_on=bool(existing.get("monitor")))
+    _validate_site_payload(data)
 
     captured: dict = {}
 
@@ -1172,15 +1644,7 @@ def update_site(site_id: str, site: SiteIn, authorization: str | None = Header(d
     _load_mutate(_mutate)
 
     item = captured["item"]
-    # 编辑任何字段都按勾选状态对账同步：
-    # - 勾选：旧地址目标清理、job 名（名称/环境）或地址变了就地更新
-    # - 取消勾选：摘除该系统所有拨测目标
-    if item["monitor"]:
-        _sync_status.pop(item["id"], None)
-        stale = {captured["old_probe_url"]} if captured["was_monitor"] and captured["old_probe_url"] and captured["old_probe_url"] != _pick_probe_url(item) else set()
-        _sync_probe_async(dict(item), "register", extra_urls=stale)
-    elif captured["was_monitor"]:
-        _sync_probe_async(dict(item), "remove")
+    # monitor=true 的站点自动成为拨测目标，写站点即生效，无需额外同步
     return item
 
 
@@ -1199,43 +1663,26 @@ def delete_site(site_id: str, authorization: str | None = Header(default=None)):
     # 原子读-改-写：避免 _load→_save 之间被并发请求覆盖（TOCTOU）
     _load_mutate(_mutate)
     removed = captured["removed"]
-    _sync_status.pop(site_id, None)
-    # 删除时把该系统所有可能的拨测地址都清理掉
-    # 注意：_remove_probe 内部已遍历所有候选 URL，无需按 URL 起多个线程
-    if removed.get("monitor"):
-        _sync_probe_async(dict(removed), "remove")
+    # 删除站点后，其拨测目标自动消失（下次 categraf 拉取时不再包含）
     return {"ok": True}
 
 
 @app.get("/api/monitor-status")
 def monitor_status(authorization: str | None = Header(default=None)):
-    """各系统拨测同步结果（内存态，供前端卡片展示）"""
+    """各系统拨测状态（写站点即生效，无需同步状态跟踪）"""
     _require_user(authorization)
-    return _sync_status
+    # 返回空 dict：拨测目标从站点数据实时生成，不存在"同步失败"状态
+    return {}
 
 
 @app.get("/api/monitor-config")
 def monitor_config(authorization: str | None = Header(default=None)):
-    """拨测联动状态。前端据此把「加入监控」置灰并给出对应提示 ——
-    后端未配置时会拒绝 monitor=true（见 _validate_site_payload），
-    所以前端必须提前禁用，否则用户点了才知道失败，还容易留下脏状态。
-
-    enabled 是 gate（env 是否配齐），state 是诊断（配齐了能不能用）。
-    两者刻意分开：admin 短暂不可用时不拦写入，失败会显示在卡片的同步状态里，
-    不会把「加不了拨测」误报成「未配置」。
-
-    本接口不阻塞在探测上：state 回最后已知值，缓存过期才在后台起探测。
-    冷启动时 state 为 unknown —— 前端几秒后重试会拿到真实状态。
-    之前在这里同步探测，冷缓存最坏拖 ~10s，页面表现为「加入监控」一直灰着、
-    提示停在「状态未确认」，被当成配置错误排查了一整轮。"""
+    """拨测配置状态。enabled=True 表示本服务可作为 categraf http_provider 使用。
+    state：ok=已配置 CATEGRAF_TOKEN，error=未配置（端点拒绝一切拉取请求，fail closed）。"""
     _require_user(authorization)
-    if not _monitor_enabled():
-        return {"enabled": False, "state": "off", "reason": "缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS"}
-    cache = _monitor_state_cache
-    stale = not cache["state"] or time.time() - cache["at"] >= _MONITOR_STATE_TTL
-    if stale:
-        _schedule_monitor_probe()
-    return {"enabled": True, "state": cache["state"] or "unknown", "reason": cache["detail"]}
+    if CATEGRAF_TOKEN:
+        return {"enabled": True, "state": "ok", "reason": ""}
+    return {"enabled": False, "state": "error", "reason": "未配置 CATEGRAF_TOKEN，/api/config/http_response 将拒绝所有拉取请求（fail closed）"}
 
 
 # ── 批量导入 / 导出 ──
@@ -1247,6 +1694,18 @@ def _parse_bool(v) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "是", "y")
 
 
+def _parse_tri_bool(v) -> bool | None:
+    """三态布尔：空/none/null → None（用 categraf 默认值），其余走 _parse_bool"""
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    if s in ("", "none", "null"):
+        return None
+    return s in ("1", "true", "yes", "是", "y")
+
+
 def _normalize_import_row(row: dict, idx: int) -> dict:
     name = str(row.get("name") or row.get("系统名称") or "").strip()
     if not name:
@@ -1256,15 +1715,16 @@ def _normalize_import_row(row: dict, idx: int) -> dict:
     if env not in ("生产环境", "测试环境"):
         raise ValueError(f"第{idx}行「{name}」环境标识必须是 生产环境 或 测试环境")
     monitor = _parse_bool(row.get("monitor") if "monitor" in row else row.get("拨测监控"))
+    # 占位符归一必须在「至少填一个」校验之前：一整行 URL 都是 "-" 时应当报"什么都没填"
     urls = [
-        str(row.get(k) or row.get(cn) or "").strip()
+        _blank_if_placeholder(str(row.get(k) or row.get(cn) or ""))
         for k, cn in (("domain", "域名"), ("public_url", "公网地址"), ("private_url", "内网地址"))
     ]
-    connection = str(row.get("connection") or row.get("连接串") or "").strip()
+    connection = _blank_if_placeholder(str(row.get("connection") or row.get("连接串") or ""))
     # URL 三字段和连接串至少填一个（非 URL 类资源允许只填连接串）
     if not any(urls) and not connection:
         raise ValueError(f"第{idx}行「{name}」域名/公网/内网/连接串至少填一个")
-    return {
+    result = {
         # 站点名称保持原样（不带后缀），同站点双环境靠 name 相同 + env 不同表达
         "name": name,
         "kind": kind,
@@ -1280,7 +1740,21 @@ def _normalize_import_row(row: dict, idx: int) -> dict:
         # 拨测参数：留空即默认（状态码 200、不设超时），与 _export_csv 的列一一对应
         "probe_status_codes": str(row.get("probe_status_codes") or row.get("拨测状态码") or "").strip(),
         "probe_timeout": str(row.get("probe_timeout") or row.get("拨测超时") or "").strip(),
+        # 细粒度拨测配置（与创建/更新路径一致）
+        "probe_method": str(row.get("probe_method") or row.get("拨测方法") or "").strip(),
+        "probe_headers": str(row.get("probe_headers") or row.get("拨测请求头") or "").strip(),
+        "probe_body": str(row.get("probe_body") or row.get("拨测Body") or "").strip(),
+        "probe_follow_redirects": _parse_tri_bool(row.get("probe_follow_redirects") if "probe_follow_redirects" in row else row.get("跟随重定向")),
+        "probe_insecure_skip_verify": _parse_bool(row.get("probe_insecure_skip_verify") if "probe_insecure_skip_verify" in row else row.get("跳过证书校验")),
+        "probe_tls_ca": str(row.get("probe_tls_ca") or row.get("私有CA路径") or "").strip(),
     }
+
+    # 表格占位符归一为空。不处理 name / env / monitor（有独立校验，不能变空）
+    for k in ("category", "kind", "owner", "remark", "domain", "public_url", "private_url",
+              "connection", "probe_status_codes", "probe_timeout", "probe_method",
+              "probe_headers", "probe_body", "probe_tls_ca"):
+        result[k] = _blank_if_placeholder(result[k])
+    return result
 
 
 class ImportIn(BaseModel):
@@ -1332,10 +1806,14 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
                 "monitor": item_data["monitor"],
                 "probe_status_codes": item_data.get("probe_status_codes", ""),
                 "probe_timeout": item_data.get("probe_timeout", ""),
+                "probe_method": item_data.get("probe_method", ""),
+                "probe_headers": item_data.get("probe_headers", ""),
+                "probe_body": item_data.get("probe_body", ""),
+                "probe_follow_redirects": item_data.get("probe_follow_redirects"),
+                "probe_insecure_skip_verify": item_data.get("probe_insecure_skip_verify", False),
+                "probe_tls_ca": item_data.get("probe_tls_ca", ""),
             }).model_dump()
-            # 与创建/更新路径同一条校验线。之前导入漏掉这步，两条防线都能被批量导入绕过：
-            #   1. 勾选拨测但只有连接串（无 URL）→ 记录 monitor=true 却永远无可探测地址
-            #   2. SSRF 防护 _assert_public_url → 可把拨测指向内网/环回地址
+            # 与创建/更新路径同一条校验线：勾选拨测必须有 URL 或连接串，格式校验一致
             _validate_site_payload(validated)
             parsed.append(validated)
         except HTTPException as exc:
@@ -1344,28 +1822,23 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
             skipped.append({"reason": str(exc)})
 
     # 原子读-改-写：_load_mutate 内做去重 + 批量 append
+    # 独立拨测目标一次性取出：循环里每行调用 _find_duplicate 时传进去，
+    # 不然 5000 行就是 5000 次读 probes.json
+    probe_addrs = {(p.get("url") or "").strip().lower() for p in _load_probes()} - {""}
     added: list = []
 
     def _mutate(sites):
-        existing_names = {(s["name"].strip().lower(), (s.get("env") or "").strip()) for s in sites}
-        existing_urls = set()
-        existing_conns = set()
-        for s in sites:
-            for k in ("domain", "public_url", "private_url"):
-                n = _norm_url(s.get(k))
-                if n:
-                    existing_urls.add(n)
-            c = (s.get("connection") or "").strip().lower()
-            if c:
-                existing_conns.add(c)
-
+        # 一次性建索引：不然每行查重都重新 norm URL + 解析连接串（5000 行 x 2000 条 = 55 秒）
+        index = _build_dup_index(sites)
         now = _now()
         for item_data in parsed:
-            name_key = (item_data["name"].strip().lower(), item_data["env"])
-            dup_urls = {_norm_url(item_data.get(k)) for k in ("domain", "public_url", "private_url")} - {""}
-            dup_conn = (item_data["connection"] or "").strip().lower()
-            if name_key in existing_names or (dup_urls & existing_urls) or (dup_conn and dup_conn in existing_conns):
-                skipped.append({"reason": f"「{item_data['name']}」已存在（名称+环境、地址或连接串重复），跳过"})
+            # 走和创建/更新完全同一条查重线。原来这里另写一套字面比较，
+            # 后果是 _find_duplicate 里的检查对导入路径全部失效：
+            #   - 撞拨测页的独立端口目标（导入能塞进重复的 host:port）
+            #   - 两个站点连接串写法不同但解析出同一 host:port（字面比拦不住）
+            dup = _find_duplicate(sites, item_data, probe_addrs=probe_addrs, index=index)
+            if dup:
+                skipped.append({"reason": f"{dup}，重复项已跳过"})
                 continue
             item = {
                 "id": secrets.token_hex(4),
@@ -1374,29 +1847,32 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
                 "updated_at": now,
             }
             sites.append(item)
-            existing_names.add(name_key)
-            existing_urls.update(dup_urls)
-            if dup_conn:
-                existing_conns.add(dup_conn)
+            index.append(_dup_index_entry(item))   # 后续行也要和新写入的记录查重
             added.append(item)
 
     _load_mutate(_mutate)
 
-    if added:
-        for item in added:
-            if item["monitor"]:
-                _sync_probe_async(dict(item), "register")
+    # monitor=true 的站点自动成为拨测目标，写站点即生效
     return {"added": len(added), "skipped_count": len(skipped), "skipped": skipped[:20]}
 
 
 def _export_csv(sites: list) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    header_cn = ["系统名称", "资源类型", "分类", "域名", "公网地址", "内网地址", "连接串", "负责人", "环境标识", "备注", "拨测监控", "拨测状态码", "拨测超时"]
+    header_cn = ["系统名称", "资源类型", "分类", "域名", "公网地址", "内网地址", "连接串", "负责人", "环境标识", "备注", "拨测监控", "拨测状态码", "拨测超时", "拨测方法", "拨测请求头", "拨测Body", "跟随重定向", "跳过证书校验", "私有CA路径"]
     writer.writerow(header_cn)
-    key_map = ["name", "kind", "category", "domain", "public_url", "private_url", "connection", "owner", "env", "remark", "monitor", "probe_status_codes", "probe_timeout"]
+    key_map = ["name", "kind", "category", "domain", "public_url", "private_url", "connection", "owner", "env", "remark", "monitor", "probe_status_codes", "probe_timeout", "probe_method", "probe_headers", "probe_body", "probe_follow_redirects", "probe_insecure_skip_verify", "probe_tls_ca"]
     for s in sites:
-        writer.writerow([s.get(k, "") for k in key_map])
+        row = []
+        for k in key_map:
+            v = s.get(k, "")
+            if k == "probe_follow_redirects":
+                row.append("" if v is None else ("true" if v else "false"))
+            elif isinstance(v, bool):
+                row.append("true" if v else "false")
+            else:
+                row.append(v)
+        writer.writerow(row)
     # utf-8-sig 带 BOM，Excel 直接打开不乱码
     return buf.getvalue().encode("utf-8-sig")
 

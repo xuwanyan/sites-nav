@@ -67,6 +67,7 @@
     cursor: pointer;
     transition: all 0.2s;
     font-weight: 500;
+    text-decoration: none;   /* 导航按钮用 <a>（拨测管理新标签页打开），去掉默认下划线 */
   }
   .btn-primary { background: #1677ff; color: #fff; }
   .btn-primary:hover { background: #4096ff; }
@@ -85,6 +86,26 @@
     border-radius: 4px;
     font-size: 12px;
     font-weight: 500;
+  }
+  /* 拨测配置告警条：横贯整页顶部，够醒目但不抢主视觉 */
+  .monitor-warn {
+    background: #fff2f0;
+    border-bottom: 1px solid #ffccc7;
+    color: #cf1322;
+    padding: 9px 32px;
+    font-size: 13px;
+    line-height: 1.5;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .monitor-warn .mw-icon { flex-shrink: 0; }
+  .monitor-warn code {
+    background: rgba(207,19,34,.08);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
   }
 
   /* 分类筛选 */
@@ -476,10 +497,15 @@
     <button id="addBtn" class="btn btn-primary" style="display:none;" onclick="openSiteModal()">+ 新增网站</button>
     <button id="importBtn" class="btn btn-default" style="display:none;" onclick="openImportModal()">批量导入</button>
     <button id="exportBtn" class="btn btn-default" style="display:none;" onclick="openExportModal()">导出</button>
+    <a id="probesBtn" class="btn btn-default" style="display:none;" href="/probes" target="_blank" rel="noopener">📡 拨测管理</a>
     <button id="usersBtn" class="btn btn-default" style="display:none;" onclick="openUsersModal()">👤 用户管理</button>
     <button id="logoutBtn" class="btn btn-default" style="display:none;" onclick="logout()">退出登录</button>
   </div>
 </div>
+
+<!-- 拨测配置告警：CATEGRAF_TOKEN 没配时 /api/config/http_response 拒绝一切拉取，
+     categraf 收不到任何目标。不提示的话，"已勾选监控"会让运维以为真的在被监测。 -->
+<div id="monitorWarn" style="display:none;"></div>
 
 <div class="layout">
 
@@ -513,24 +539,14 @@
       <div class="form-group">
         <label>资源类型 <span class="required">*</span></label>
         <select id="f_kind" onchange="onKindChange()">
-          <option value="网站">🌐 网站 / 服务</option>
-          <option value="缓存">⚡ 缓存（Redis 等）</option>
-          <option value="消息队列">📨 消息队列（Kafka / RabbitMQ）</option>
-          <option value="数据库">🗄️ 数据库（MySQL / PG / Mongo）</option>
-          <option value="存储">☁️ 存储（OSS / S3 / NAS）</option>
-          <option value="">✏️ 自定义…</option>
+          <option value="网站">🌐 网站</option>
+          <option value="非网站">🔌 非网站</option>
         </select>
-        <input type="text" id="f_kind_custom" list="kindSuggestions" placeholder="自定义类型，如 Nginx / Harbor / Vault / K8s…" style="margin-top:6px; display:none;">
-        <datalist id="kindSuggestions">
-          <option value="网站"><option value="Nginx"><option value="Harbor"><option value="Vault">
-          <option value="Kubernetes"><option value="LDAP"><option value="DNS"><option value="Prometheus">
-          <option value="内部工具"><option value="其他">
-        </datalist>
-        <div style="font-size:11px; color:#8c8c8c; margin-top:4px;">常用类型有预设，也可自由填写</div>
+        <div style="font-size:11px; color:#8c8c8c; margin-top:4px;">网站填 URL 地址走 HTTP 拨测；非网站填连接串走 TCP/UDP 端口拨测</div>
       </div>
       <div class="form-group">
         <label>名称 <span class="required">*</span></label>
-        <input type="text" id="f_name" placeholder="如 GitLab（生产 / 测试同名即可自动分组）">
+        <input type="text" id="f_name" maxlength="100" placeholder="如 GitLab（生产 / 测试同名即可自动分组）">
       </div>
       <div class="form-row">
         <div class="form-group">
@@ -542,7 +558,7 @@
         </div>
         <div class="form-group">
           <label>分类</label>
-          <input type="text" id="f_category" placeholder="如 代码管理、中间件（可不填）" list="categoryList">
+          <input type="text" id="f_category" maxlength="50" placeholder="如 代码管理、中间件（可不填）" list="categoryList">
           <datalist id="categoryList"></datalist>
         </div>
       </div>
@@ -551,15 +567,15 @@
       <div id="urlFields">
         <div class="form-group">
           <label>域名</label>
-          <input type="text" id="f_domain" placeholder="如 gitlab.company.com" oninput="updateMonitorBtn()">
+          <input type="text" id="f_domain" maxlength="200" placeholder="如 gitlab.company.com（IP 填到公网/内网地址）" oninput="updateMonitorBtn(); updateProbeTls()">
         </div>
         <div class="form-group">
           <label>公网地址</label>
-          <input type="text" id="f_public_url" placeholder="https://..." oninput="updateMonitorBtn()">
+          <input type="text" id="f_public_url" maxlength="500" placeholder="https://..." oninput="updateMonitorBtn(); updateProbeTls()">
         </div>
         <div class="form-group">
           <label>内网地址</label>
-          <input type="text" id="f_internal_url" placeholder="http://192.168..." oninput="updateMonitorBtn()">
+          <input type="text" id="f_internal_url" maxlength="500" placeholder="http://192.168..." oninput="updateMonitorBtn(); updateProbeTls()">
         </div>
       </div>
 
@@ -567,36 +583,111 @@
       <div id="connField" style="display:none;">
         <div class="form-group">
           <label>连接串</label>
-          <input type="text" id="f_connection" placeholder="如 redis://10.0.1.5:6379/0">
+          <input type="text" id="f_connection" maxlength="500" placeholder="如 redis://10.0.1.5:6379/0" oninput="updateMonitorBtn()">
           <div id="connHint" style="font-size:11px; color:#8c8c8c; margin-top:4px;"></div>
         </div>
       </div>
 
       <div class="form-group">
         <label>负责人</label>
-        <input type="text" id="f_owner" placeholder="如 张三 / 运维组">
+        <input type="text" id="f_owner" maxlength="100" placeholder="如 张三 / 运维组">
       </div>
       <div class="form-group">
         <label>拨测监控</label>
         <label style="display:flex; align-items:center; gap:8px; font-weight:400; cursor:pointer;">
-          <input type="checkbox" id="f_monitor" style="width:auto;" onchange="toggleProbeParams()">
-          <span>加入 categraf 自动拨测（域名优先探测）</span>
+          <input type="checkbox" id="f_monitor" style="width:auto;" onchange="toggleProbeParams(true)">
+          <span>加入 categraf 自动拨测（URL 走 HTTP 拨测，连接串走端口拨测）</span>
         </label>
-        <div id="monitorHint" style="font-size:11px; color:#8c8c8c; margin-top:4px;">仅当填了 URL 地址（域名/公网/内网）时可用；连接串形式的资源不支持拨测</div>
+        <div id="monitorHint" style="font-size:11px; color:#8c8c8c; margin-top:4px;">填入 URL 地址或连接串后可启用拨测监控</div>
       </div>
       <div class="form-row" id="probeParamsRow" style="display:none;">
-        <div class="form-group">
+        <div class="form-group" id="probeCodesGroup">
           <label>期望状态码</label>
           <input type="text" id="f_probe_codes" placeholder="200，多个用 | 分隔">
+        </div>
+        <div class="form-group" id="probeProtocolGroup" style="display:none; max-width:150px;">
+          <label>协议</label>
+          <select id="f_probe_protocol" onchange="updateProbeNetUdpHint()">
+            <option value="tcp">TCP</option>
+            <option value="udp">UDP</option>
+          </select>
         </div>
         <div class="form-group">
           <label>超时时长</label>
           <input type="text" id="f_probe_timeout" placeholder="如 3s / 500ms，纯数字按秒，留空不设置">
         </div>
       </div>
+      <!-- 端口拨测高级：发送与响应匹配（对齐原 categraf-http-admin） -->
+      <div id="probeNetAdvBlock" style="display:none; margin-top:4px;">
+        <div id="probeUdpHint" style="display:none;font-size:12px;color:#cf1322;margin-bottom:8px">⚠️ UDP 无连接：不配置下方「发送与响应匹配」时判活不可靠，强烈建议配置</div>
+        <div style="margin-top:4px">
+          <a href="javascript:void(0)" id="probeNetAdvToggle" onclick="toggleProbeNetAdv()" style="font-size:12px;color:#1677ff;text-decoration:none">▸ 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）</a>
+        </div>
+        <div class="form-row" id="probeNetAdvGroup" style="display:none;margin-top:8px;">
+          <div class="form-group">
+            <label>发送内容 (send，支持 \r \n \t 转义)</label>
+            <input type="text" id="f_probe_send" maxlength="500" placeholder="\r\n">
+          </div>
+          <div class="form-group">
+            <label>期望响应包含 (expect)</label>
+            <input type="text" id="f_probe_expect" maxlength="500" placeholder="PONG">
+          </div>
+          <div class="form-group" style="max-width:150px;">
+            <label>读超时</label>
+            <input type="text" id="f_probe_read_timeout" placeholder="如 500ms / 3s，留空用默认 3s">
+          </div>
+        </div>
+      </div>
+      <div id="probeAdvBlock" style="display:none;">
+        <div class="form-row">
+          <div class="form-group" style="max-width:150px;">
+            <label>请求方法</label>
+            <select id="f_probe_method">
+              <option value="">默认（GET）</option>
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="DELETE">DELETE</option>
+              <option value="HEAD">HEAD</option>
+            </select>
+          </div>
+          <div class="form-group" style="max-width:150px;">
+            <label>跟随重定向</label>
+            <select id="f_probe_follow_redirects">
+              <option value="">默认</option>
+              <option value="true">跟随</option>
+              <option value="false">不跟随</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>请求头（JSON 数组）</label>
+            <input type="text" id="f_probe_headers" maxlength="2000" placeholder='["X-Key","val"]'>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>请求 Body</label>
+            <textarea id="f_probe_body" maxlength="4000" placeholder='{"key":"value"}'></textarea>
+          </div>
+        </div>
+        <div id="probeTlsBlock" style="display:none; padding:10px 12px; background:#f8f9ff; border-radius:6px; margin-bottom:12px;">
+          <div class="form-row" style="margin-bottom:0;">
+            <div class="form-group" style="min-width:auto; display:flex; align-items:center;">
+              <label style="display:flex; align-items:center; gap:6px; font-weight:400; cursor:pointer; margin:0;">
+                <input type="checkbox" id="f_probe_skip_verify" style="width:auto;" onchange="toggleProbeSkip()">
+                <span title="临时跳过证书校验（证书过期/自签名可用，不建议长期开启）">⚠️ 跳过证书校验</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label>TLS CA 证书路径（categraf 服务器本地路径，仅内网自建 CA 需要）</label>
+              <input type="text" id="f_probe_tls_ca" maxlength="500" placeholder="/etc/categraf/ca.pem">
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="form-group">
         <label>描述备注</label>
-        <textarea id="f_remark" placeholder="登录方式、账号说明、注意事项等"></textarea>
+        <textarea id="f_remark" maxlength="500" placeholder="登录方式、账号说明、注意事项等"></textarea>
       </div>
     </div>
     <div class="modal-footer">
@@ -687,6 +778,42 @@
     <div class="modal-body">
       <input type="hidden" id="probeSiteId">
       <p id="probeSiteName" style="font-size:13px; color:#595959; margin-bottom:14px;"></p>
+      <!-- 端口拨测（非网站资源：无 URL、仅连接串）：协议 + 连接超时 + 发送/响应 -->
+      <div id="probePortFields" style="display:none;">
+        <div class="form-row">
+          <div class="form-group" style="max-width:150px;">
+            <label>协议</label>
+            <select id="probeProtocol" onchange="updateProbeQuickUdpHint()">
+              <option value="tcp">TCP</option>
+              <option value="udp">UDP</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>连接超时时间</label>
+            <input type="text" id="probePortTimeout" placeholder="如 3s / 500ms，留空用默认 1s" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
+          </div>
+        </div>
+        <div id="probeQuickUdpHint" style="display:none;font-size:12px;color:#cf1322;margin:8px 0 2px">⚠️ UDP 无连接：不配置下方「发送与响应匹配」时判活不可靠，强烈建议配置</div>
+        <div style="margin-top:6px">
+          <a href="javascript:void(0)" id="probeQuickAdvToggle" onclick="toggleProbeQuickNetAdv()" style="font-size:12px;color:#1677ff;text-decoration:none">▸ 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）</a>
+        </div>
+        <div class="form-row" id="probeQuickNetAdvGroup" style="display:none;margin-top:8px;">
+          <div class="form-group">
+            <label>发送内容 (send，支持 \r \n \t 转义)</label>
+            <input type="text" id="probeSend" maxlength="500" placeholder="\r\n" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
+          </div>
+          <div class="form-group">
+            <label>期望响应包含 (expect)</label>
+            <input type="text" id="probeExpect" maxlength="500" placeholder="PONG" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
+          </div>
+          <div class="form-group" style="max-width:150px;">
+            <label>读超时</label>
+            <input type="text" id="probeReadTimeout" placeholder="如 500ms / 3s，留空用默认 3s" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
+          </div>
+        </div>
+      </div>
+      <!-- HTTP 拨测（有 URL 的网站类资源） -->
+      <div id="probeHttpFields">
       <div class="form-row">
         <div class="form-group">
           <label>期望状态码</label>
@@ -696,10 +823,50 @@
           <label>超时时长</label>
           <input type="text" id="probeTimeout" placeholder="3 = 3秒，也可填 3s/500ms" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
         </div>
+        <div class="form-group" style="max-width:130px;">
+          <label>请求方法</label>
+          <select id="probeMethod">
+            <option value="">默认（GET）</option>
+            <option value="GET">GET</option>
+            <option value="POST">POST</option>
+            <option value="PUT">PUT</option>
+            <option value="DELETE">DELETE</option>
+            <option value="HEAD">HEAD</option>
+          </select>
+        </div>
+        <div class="form-group" style="max-width:130px;">
+          <label>跟随重定向</label>
+          <select id="probeFollow">
+            <option value="">默认</option>
+            <option value="true">跟随</option>
+            <option value="false">不跟随</option>
+          </select>
+        </div>
       </div>
-      <p style="font-size:12px; color:#8c8c8c; line-height:1.6;">
-        状态码多个用 | 分隔（如 200|301），留空默认 200；超时可只填数字自动按秒（如 3 = 3s），留空不设置。探测地址：域名 &gt; 公网 &gt; 内网。
-      </p>
+      <div class="form-group">
+        <label>请求头（JSON 数组）</label>
+        <input type="text" id="probeHeaders" maxlength="2000" placeholder='["X-Key","val"]'>
+      </div>
+      <div class="form-group">
+        <label>请求 Body</label>
+        <textarea id="probeBody" maxlength="4000" placeholder='{"key":"value"}'></textarea>
+      </div>
+      <div id="probeQuickTls" style="display:none; padding:10px 12px; background:#f8f9ff; border-radius:6px; margin-bottom:12px;">
+        <div class="form-row" style="margin-bottom:0;">
+          <div class="form-group" style="min-width:auto; display:flex; align-items:center;">
+            <label style="display:flex; align-items:center; gap:6px; font-weight:400; cursor:pointer; margin:0;">
+              <input type="checkbox" id="probeSkipVerify" style="width:auto;" onchange="toggleProbeQuickSkip()">
+              <span title="临时跳过证书校验（证书过期/自签名可用，不建议长期开启）">⚠️ 跳过证书校验</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label>TLS CA 证书路径（categraf 服务器本地路径，仅内网自建 CA 需要）</label>
+            <input type="text" id="probeTlsCa" maxlength="500" placeholder="/etc/categraf/ca.pem">
+          </div>
+        </div>
+        </div>
+      </div>
+      <p id="probeHintP" style="font-size:12px; color:#8c8c8c; line-height:1.6;"></p>
     </div>
     <div class="modal-footer">
       <button class="btn btn-default" onclick="closeProbeModal()">取消</button>
@@ -722,11 +889,11 @@
         <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; align-items:flex-end;">
           <div style="flex:1; min-width:120px;">
             <label style="font-size:12px; color:#8c8c8c;">用户名</label>
-            <input type="text" id="newUsername" placeholder="如 zhangsan" style="width:100%; padding:6px 8px; border:1px solid #d9d9d9; border-radius:4px; box-sizing:border-box;">
+            <input type="text" id="newUsername" maxlength="32" placeholder="如 zhangsan" style="width:100%; padding:6px 8px; border:1px solid #d9d9d9; border-radius:4px; box-sizing:border-box;">
           </div>
           <div style="flex:1.4; min-width:160px;">
             <label style="font-size:12px; color:#8c8c8c;">密码（≥10位 含字母+数字）</label>
-            <input type="password" id="newPassword" placeholder="初始密码" style="width:100%; padding:6px 8px; border:1px solid #d9d9d9; border-radius:4px; box-sizing:border-box;">
+            <input type="password" id="newPassword" maxlength="256" placeholder="初始密码（≤256 字符）" style="width:100%; padding:6px 8px; border:1px solid #d9d9d9; border-radius:4px; box-sizing:border-box;">
           </div>
           <div>
             <label style="font-size:12px; color:#8c8c8c;">角色</label>
@@ -748,10 +915,14 @@
 <script>
 // ==================== 状态 ====================
 let sites = [];
+// 分组卡的站点列表注册表：「复制全部信息」按钮要靠它拿到整组数据。
+// 组的名称是用户输入的，不能塞进内联 handler（见 escapeAttr 的注释），
+// 所以改成按下标索引，renderSites 每次重渲时重建。
+let groupRegistry = [];
 let activeCategory = "全部";
 let activeEnv = "全部";
-let token = sessionStorage.getItem("nav_token") || "";
-let role = sessionStorage.getItem("nav_role") || "user";
+let token = localStorage.getItem("nav_token") || "";
+let role = localStorage.getItem("nav_role") || "user";
 const isAdmin = () => token && role === "admin";
 let deleteTargetId = null;
 let deleteTargetEnv = null;
@@ -770,29 +941,36 @@ async function withBusy(fn, btn) {
 // 分组卡（默认开）：同站点名按生产 / 测试聚成一张卡；用户可切「拆开模式」
 let groupByEnv = localStorage.getItem("groupByEnv") !== "false";
 let probeStatusMap = {};
-// 拨测联动是否已配置（CATEGRAF_ADMIN_URL / CATEGRAF_ADMIN_PASS）。
-// false 时「加入监控」置灰不可点 —— 后端会拒绝 monitor=true，
-// 提前禁用可避免用户点了才知道失败。
-let monitorEnabled = false;
-// monitorState：unknown=还没拉到配置 / off=未配置 / unreachable=连不上管理端 / auth_failed=账密错 / ok=可用。
-// enabled 只看 env 是否配齐（与后端 /api/monitor-config 的 enabled 同义），state 额外说明
-// 「配了但用不了」的原因。两者分开，避免把「没探到」显示成「未配置」——
-// 之前配置接口 5xx 一次，按钮就永久显示未配置，能配好的环境被误判。
-let monitorState = "unknown";
-const MONITOR_TIPS = {
-  unknown: "拨测联动状态未确认（配置接口未返回），刷新页面重试",
-  off: "拨测联动未配置（缺 CATEGRAF_ADMIN_URL 或 CATEGRAF_ADMIN_PASS），请先在 .env 配好并重启容器",
-  unreachable: "拨测管理端不可达，请检查 .env 的 CATEGRAF_ADMIN_URL 与 categraf-http-admin 的 HOST/端口",
-  auth_failed: "拨测管理端账密错误，请核对 .env 的 CATEGRAF_ADMIN_PASS 是否等于 admin 的 CONFIG_PASS",
-};
-const MONITOR_LABELS = {
-  unknown: "拨测状态未知",
-  off: "拨测未配置",
-  unreachable: "拨测不可达",
-  auth_failed: "拨测账密错",
-};
-function monitorTip() { return MONITOR_TIPS[monitorState] || MONITOR_TIPS.unknown; }
-function monitorLabel() { return MONITOR_LABELS[monitorState] || MONITOR_LABELS.unknown; }
+// 拨测功能始终可用：sites-nav 直接作为 categraf http_provider，
+// monitor=true 的站点自动成为拨测目标，写站点即生效。
+// ==================== 拨测配置状态 ====================
+// 从 /api/monitor-config 拉，**不要写死 "ok"**：CATEGRAF_TOKEN 没配时后端 fail closed，
+// /api/config/http_response 拒绝一切拉取，categraf 一条目标都拿不到。
+// 这里原先写死 "ok"，页面永远显示"拨测已启用"，忘了配 token 时运维看不出任何异常。
+let monitorConfigState = "ok";   // ok | error
+
+async function loadMonitorConfig() {
+  // 拨测配置告警只对 admin 展示：普通用户是看站点导航的，不需要看到这条运维级提示
+  if (!isAdmin()) return;
+  let cfg;
+  try {
+    cfg = await api("/api/monitor-config");
+  } catch (e) {
+    return;   // 会话刚过期之类：不弹告警，避免误导
+  }
+  const box = $("monitorWarn");
+  if (!cfg || cfg.state !== "error") {
+    monitorConfigState = "ok";
+    box.style.display = "none";
+    return;
+  }
+  monitorConfigState = "error";
+  const reason = cfg.reason || "拨测配置异常";
+  box.className = "monitor-warn";
+  box.style.display = "flex";
+  box.innerHTML = `<span class="mw-icon">⚠️</span><span><b>拨测未生效：</b>${escapeHtml(reason)}。`
+    + `已勾选「加入监控」的站点目前不会产生任何拨测目标，修好配置后 categraf 会自动拉到。</span>`;
+}
 
 // 资源类型元数据：预设类型带图标和颜色，自定义类型走哈希兜底
 const KIND_META = {
@@ -839,6 +1017,7 @@ if (!token) {
   updateAdminUI();
   syncGroupToggle();
   loadSites();
+  loadMonitorConfig();   // CATEGRAF_TOKEN 没配时页面顶部告警，别让用户以为在正常监测
 }
 
 // ==================== API 请求 ====================
@@ -849,15 +1028,33 @@ async function api(url, options = {}) {
   if (res.status === 401) {
     // token 过期 / 被禁用 / 被改密 → 清状态回登录页
     token = ""; role = "user";
-    sessionStorage.removeItem("nav_token");
-    sessionStorage.removeItem("nav_role");
+    localStorage.removeItem("nav_token");
+    localStorage.removeItem("nav_role");
     showToast("登录已过期，请重新登录", "error");
     setTimeout(() => { location.href = "/admin"; }, 800);
     throw new Error("未授权");
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || "请求失败");
+  if (!res.ok) throw new Error(apiError(data, "请求失败"));
   return data;
+}
+
+// FastAPI 的错误 detail 有两种形状，必须分开处理：
+//   HTTPException(detail="同名同环境的「X」已存在")   -> 字符串
+//   Pydantic 校验失败（422，字段超长/格式不合法）      -> [{type, loc, msg, input}] 数组
+// 直接 new Error(array) 的 message 是 "[object Object]"，用户只能干瞪眼。
+// 前端没有 maxlength，而后端对 9 个字段有长度限制，422 是日常会撞到的。
+function apiError(data, fallback) {
+  const d = data && data.detail;
+  if (Array.isArray(d)) {
+    return d.map(x => {
+      const loc = Array.isArray(x && x.loc)
+        ? x.loc.filter(p => p !== "body" && p !== undefined).join(".") : "";
+      const msg = (x && x.msg) || JSON.stringify(x);
+      return loc ? `${loc}: ${msg}` : msg;
+    }).join("；");
+  }
+  return typeof d === "string" && d ? d : (fallback || "请求失败");
 }
 
 async function loadSites() {
@@ -873,33 +1070,12 @@ async function loadSites() {
   }
 }
 
-// 拉取拨测同步状态，更新卡片上的 📡 图标（延迟几次以覆盖后台同步完成）
-// retry 默认 4：后端首次探测在后台线程跑，timeout=5 含建连+读取最坏 ~10s，
-// 原来 2 次 × 3s 只有 9s，冷启动会一直停在「状态未确认」
-async function refreshProbeStatus(retry = 4) {
-  const prevEnabled = monitorEnabled;
-  const prevState = monitorState;
-  // 两个接口独立拉取。之前用 Promise.all，任一 5xx/401 会把两个一起吞掉，
-  // monitorEnabled 停在初始 false，整页显示「未配置」，而且 catch 里什么都没说
+// 拨测状态刷新：写站点即生效，无需探测外部管理端，只做一次轻量拉取
+async function refreshProbeStatus(retry = 0) {
   try {
     probeStatusMap = await api("/api/monitor-status");
-  } catch (e) { console.warn("拉取拨测同步状态失败", e); }
-  try {
-    const cfg = await api("/api/monitor-config");
-    monitorEnabled = !!cfg.enabled;
-    monitorState = cfg.state || (monitorEnabled ? "ok" : "off");
-  } catch (e) {
-    console.warn("拉取拨测配置失败，联动状态按未知处理", e);
-    monitorState = "unknown";
-  }
-  updateMonitorBtn();   // 联动不可用时把表单里的复选框一起禁用
-  if (monitorEnabled !== prevEnabled || monitorState !== prevState) {
-    // 联动状态变了就重渲染卡片：probeBadge / monitorBtn 的文案和置灰状态是
-    // 渲染时写死进 innerHTML 的，只刷表单提示会让卡片一直停在「拨测状态未知」。
-    // 必须先于下面的 forEach 重渲染，否则刚建的 probe-<id> 元素会被覆盖掉
-    renderCategories();
-    renderSites();
-  }
+  } catch (e) { console.warn("拉取拨测状态失败", e); }
+  updateMonitorBtn();
   Object.entries(probeStatusMap).forEach(([id, st]) => {
     const el = document.getElementById("probe-" + id);
     if (!el) return;
@@ -910,8 +1086,6 @@ async function refreshProbeStatus(retry = 4) {
     const job = s ? probeJobName(s) : "";
     el.title = `📡 拨测任务：「${job}」\n${st.ok ? "✅" : "❌"} ${st.message}（${st.time}）`;
   });
-  // 后台同步可能还没完成，稍后再刷一次
-  if (retry > 0) setTimeout(() => refreshProbeStatus(retry - 1), 3000);
 }
 
 // 与后端 _probe_job() 一致：站点名称 + 环境后缀（名称不再自带后缀）
@@ -959,7 +1133,7 @@ function renderCategories() {
     entries.push({ key: "未分类", color: "#bfbfbf", n: pool.filter(s => !(s.category || "").trim()).length });
   }
   $("categoryBar").innerHTML = entries.map(e => `
-    <div class="cat-item ${activeCategory === e.key ? "active" : ""}" onclick="filterCategory('${escapeAttr(e.key)}')">
+    <div class="cat-item ${activeCategory === e.key ? "active" : ""}" data-cat="${escapeAttr(e.key)}" onclick="filterCategory(this)">
       <span class="cat-dot" style="background:${e.color}"></span>
       <span class="cat-name">${e.label || escapeHtml(e.key)}</span>
       <span class="cat-count">${e.n}</span>
@@ -967,8 +1141,9 @@ function renderCategories() {
   $("categoryList").innerHTML = cats.map(c => `<option value="${escapeAttr(c)}">`).join("");
 }
 
-function filterCategory(cat) {
-  activeCategory = cat;
+// 分类名从 data-cat 读，不走内联参数 —— 见 escapeAttr 的注释
+function filterCategory(el) {
+  activeCategory = el.dataset.cat;
   renderCategories();
   renderSites();
 }
@@ -1002,12 +1177,13 @@ function renderSites() {
   });
   let cards;
   if (groupByEnv) {
-    // 分组模式：环境筛选按「组内有匹配环境」生效，组内只显示匹配的环境列
-    cards = [...groups.values()]
-      .filter(g => activeEnv === "全部" || g.envs.has(activeEnv))
-      .map(g => groupCard(g));
+    // 分组模式：环境筛选按「组内有匹配环境」生效，组内只显示匹配的环境列。
+    // groupRegistry 只存这次真正渲染出来的组，data-gi 才和按钮一一对应。
+    groupRegistry = [...groups.values()].filter(g => activeEnv === "全部" || g.envs.has(activeEnv));
+    cards = groupRegistry.map((g, gi) => groupCard(g, gi));
   } else {
-    // 拆开模式：环境筛选按逐站点匹配
+    // 拆开模式：环境筛选按逐站点匹配，没有分组卡 → 注册表清空
+    groupRegistry = [];
     cards = filtered
       .filter(s => activeEnv === "全部" || s.env === activeEnv)
       .map(siteCard);
@@ -1058,8 +1234,8 @@ function siteCard(s) {
           ${s.env ? `<span class="env-tag ${envClass}">${escapeHtml(s.env)}</span>` : ""}
           ${isAdmin() ? `<span class="card-actions">
             ${monitorBtn(s)}
-            <button class="btn btn-default btn-sm" onclick="openEditSite('${escapeAttr(s.id)}')">✏️ 编辑</button>
-            <button class="btn btn-danger btn-sm" onclick="openDeleteModal('${escapeAttr(s.id)}', '${escapeAttr(s.name)}', ${s.env ? `'${escapeAttr(s.env)}'` : "null"})">🗑️ 删除</button>
+            <button class="btn btn-default btn-sm" data-edit-id="${escapeAttr(s.id)}" onclick="openEditSite(this)">✏️ 编辑</button>
+            <button class="btn btn-danger btn-sm" data-del-id="${escapeAttr(s.id)}" data-del-name="${escapeAttr(s.name)}" data-del-env="${escapeAttr(s.env || "")}" onclick="openDeleteModal(this)">🗑️ 删除</button>
           </span>` : ""}
         </span>
       </div>
@@ -1082,28 +1258,23 @@ function hasAnyUrl(s) {
   );
 }
 
-// 拨测状态徽标。联动未配置时不能显示「已监控」——
-// 那种站点根本没有拨测任务，标记是上一次留下的脏状态，显示已监控会误导人。
+// 拨测状态徽标：写站点即生效，monitor=true 的站点自动成为拨测目标
 function probeBadge(s) {
-  if (!monitorEnabled) return `<span class="env-tag env-off" title="${escapeAttr(monitorTip())}">${monitorLabel()}</span>`;
   return s.monitor
     ? `<span class="env-tag env-probe" title="${escapeAttr(probeTitle(s))}" id="probe-${escapeAttr(s.id)}">已监控</span>`
     : `<span class="env-tag env-off">未加入监控</span>`;
 }
 
-// 监控快捷按钮：无 URL 的资源（只有连接串）不出按钮 —— 后端拨测要求公网 URL，点了必然 400
+// 监控快捷按钮：有 URL（HTTP 拨测）或仅连接串（端口拨测）的资源都出。
+// 两者都无 → 无地址可探测，不出按钮。
 function monitorBtn(s) {
-  if (!hasAnyUrl(s)) return "";
-  // 已标记的站点仍允许取消：去掉标记只是改本地数据，不依赖联动，
-  // 否则联动配置被撤掉后，用户连清除自己之前留下的标记都做不到
+  const hasUrl = hasAnyUrl(s);
+  const hasConn = !!(s.connection || "").trim();
+  if (!hasUrl && !hasConn) return "";
   if (s.monitor) {
-    return `<button class="btn btn-default btn-sm" onclick="quickMonitorOff('${escapeAttr(s.id)}')">⏹️ 取消监控</button>`;
+    return `<button class="btn btn-default btn-sm" data-site-id="${escapeAttr(s.id)}" onclick="quickMonitorOff(this)">⏹️ 取消监控</button>`;
   }
-  if (!monitorEnabled) {
-    // 置灰不可点，而不是点了报 400。后端也会拒绝 monitor=true，这里是先于后端拦住。
-    return `<button class="btn btn-default btn-sm" disabled title="${escapeAttr(monitorTip())}">📡 加入监控</button>`;
-  }
-  return `<button class="btn btn-default btn-sm" onclick="openProbeModal('${escapeAttr(s.id)}')">📡 加入监控</button>`;
+  return `<button class="btn btn-default btn-sm" data-site-id="${escapeAttr(s.id)}" onclick="openProbeModal(this)">📡 加入监控</button>`;
 }
 
 // 卡片主体：URL 行 + 连接块（哪个填了显示哪个，都填都显示）
@@ -1125,12 +1296,12 @@ function cardBodyHtml(s) {
 function connBoxHtml(value) {
   const v = (value || "").trim();
   if (!v) return `<div class="conn-box"><span class="txt">— 未填写 —</span></div>`;
-  return `<div class="conn-box"><span class="txt">${escapeHtml(v)}</span><span class="icon" onclick="copyGroupItem(this, '${escapeAttr(v)}')" title="复制连接串">📋</span></div>`;
+  return `<div class="conn-box"><span class="txt">${escapeHtml(v)}</span><span class="icon" data-copy="${escapeAttr(v)}" onclick="copyGroupItem(this)" title="复制连接串">📋</span></div>`;
 }
 
-// 复制单个连接串（区别于整组复制）
-function copyGroupItem(el, text) {
-  copyText(text, el);
+// 复制单个连接串（区别于整组复制）。值从 data-copy 读，见 escapeAttr 的注释
+function copyGroupItem(el) {
+  copyText(el.dataset.copy, el);
 }
 
 // 站点/环境列共用的 URL 行渲染
@@ -1160,12 +1331,11 @@ function envCol(env, entrySites) {
     <div class="env-col-head">
       <span class="env-col-label ${isProd ? "prod" : "test"}">${label}</span>
       <span style="display:flex; align-items:center; gap:10px;">
-        ${entrySites.filter(s => s.monitor).map(s => monitorEnabled
-          ? `<span class="env-tag env-probe" id="probe-${escapeAttr(s.id)}" title="${escapeAttr(probeTitle(s))}" style="font-size:11px">📡 已监控</span>`
-          : `<span class="env-tag env-off" title="${escapeAttr(monitorTip())}" style="font-size:11px">${monitorLabel()}</span>`).join("")}
+        ${entrySites.filter(s => s.monitor).map(s =>
+          `<span class="env-tag env-probe" id="probe-${escapeAttr(s.id)}" title="${escapeAttr(probeTitle(s))}" style="font-size:11px">📡 已监控</span>`).join("")}
         ${isAdmin() ? entrySites.map(s => monitorBtn(s)).join("") : ""}
-        ${isAdmin() ? entrySites.map(s => `<button class="btn btn-default btn-sm" onclick="openEditSite('${escapeAttr(s.id)}')">✏️ 编辑</button>`).join("") : ""}
-        ${isAdmin() ? entrySites.map(s => `<button class="btn btn-danger btn-sm" onclick="openDeleteModal('${escapeAttr(s.id)}','${escapeAttr(s.name)}','${escapeAttr(env)}')">🗑️ 删除</button>`).join("") : ""}
+        ${isAdmin() ? entrySites.map(s => `<button class="btn btn-default btn-sm" data-edit-id="${escapeAttr(s.id)}" onclick="openEditSite(this)">✏️ 编辑</button>`).join("") : ""}
+        ${isAdmin() ? entrySites.map(s => `<button class="btn btn-danger btn-sm" data-del-id="${escapeAttr(s.id)}" data-del-name="${escapeAttr(s.name)}" data-del-env="${escapeAttr(env)}" onclick="openDeleteModal(this)">🗑️ 删除</button>`).join("") : ""}
       </span>
     </div>
     ${body}
@@ -1177,7 +1347,7 @@ function envCol(env, entrySites) {
 // 头部刻意精简：类型图标并进名字；分类/负责人只在实际有值时用灰字点号列出。
 // 环境标签不再出现（下方列头已有 🔴生产/🟢测试，是重复信息）；
 // 监控状态由各列自己的 📡 徽标与按钮表达，头部不再汇总。
-function groupCard(group) {
+function groupCard(group, gi) {
   const { name, envs, sites } = group;
   const sample = sites[0];
   const meta = kindMeta(sample.kind || "网站");
@@ -1197,15 +1367,17 @@ function groupCard(group) {
     <div class="card-header">
       <span class="card-name" title="${escapeAttr(sample.kind || "网站")}">${meta.icon} ${escapeHtml(name)}</span>
       ${sub}
-      <button class="copy-group-btn" onclick="copyGroupInfo(this, ${escapeAttr(JSON.stringify(sites.map(s => s.id)))})">📋 复制全部信息</button>
+      <button class="copy-group-btn" data-gi="${gi}" onclick="copyGroupInfo(this)">📋 复制全部信息</button>
     </div>
     ${cols}
   </div>`;
 }
 
 // 复制分组卡环境信息为纯文本（仅保留环境 + URL/连接串，无装饰）
-function copyGroupInfo(btn, ids) {
-  const groupSites = sites.filter(s => ids.includes(s.id));
+// 组的下标从 data-gi 读，靠 groupRegistry 取整组数据 —— 组名是用户输入的，
+// 不能塞进内联 handler（见 escapeAttr 的注释）
+function copyGroupInfo(btn) {
+  const groupSites = (groupRegistry[Number(btn.dataset.gi)] || {}).sites || [];
   if (!groupSites.length) return;
   const name = groupSites[0].name;
   const envs = [...new Set(groupSites.map(s => s.env))].sort((a, b) => {
@@ -1243,8 +1415,24 @@ function escapeHtml(str) {
   div.textContent = str == null ? "" : String(str);
   return div.innerHTML;
 }
+// escapeAttr 的适用边界：它防的是**属性值本身**被引号截断，
+// 但**不能**用来往内联事件处理器里插值。内联 handler 会被先做 HTML 实体解码再编译成 JS，
+// 这里转出的 &#39; 会被还原成单引号，于是单引号包裹的 JS 字符串被提前闭合：
+//   category = "x',alert(1),'"  →  onclick="f('x&#39;,alert(1),&#39;')"
+//                                →  解码后 JS: f('x',alert(1),'')   任意代码执行
+//   name     = "GitLab',alert("  →  f('GitLab',alert(')             SyntaxError，按钮静默失效
+// 所以用户可控的值（分类名 / 站点名 / 连接串）一律放 data-*，handler 只传 this。
+// 已这么写的正确范式见 urlRowHtml 的 .copy-btn + data-copy。
 function escapeAttr(str) {
   return escapeHtml(str).replace(/'/g, "&#39;").replace(/"/g, "&quot;");
+}
+
+// 把真实控制字符渲染成字面 \r \n \t，用于 send/expect 编辑框回显（与后端 unescape 往返对齐）
+function escCtl(str) {
+  return (str == null ? "" : String(str))
+    .split("\r").join("\\r")
+    .split("\n").join("\\n")
+    .split("\t").join("\\t");
 }
 
 function copyText(text, btn) {
@@ -1270,12 +1458,18 @@ function copyText(text, btn) {
 
 // ==================== 运维登录 ====================
 // 登录入口已外迁至独立地址 /admin（static/admin.html），首页不再提供登录 UI；
-// 此处仅保留退出登录：token 由 /admin 登录后写入 sessionStorage
+// 此处仅保留退出登录：token 由 /admin 登录后写入 localStorage
+//
+// token 存 localStorage 而不是 sessionStorage，是有意的：sessionStorage 按标签页隔离，
+// 首页登录后新开一个标签页（比如 /probes）就是未登录状态，用户会以为登录丢了。
+// localStorage 同源跨标签页共享，符合"登录一次、所有标签页都在"的预期。
+// 有效期仍由服务端 TOKEN_TTL_HOURS 兜底，token 过期任何接口都会 401 并清掉本地值。
+// 别改回 sessionStorage。
 
 function logout(notify = true) {
   token = ""; role = "user";
-  sessionStorage.removeItem("nav_token");
-  sessionStorage.removeItem("nav_role");
+  localStorage.removeItem("nav_token");
+  localStorage.removeItem("nav_role");
   if (notify) {
     showToast("已退出登录", "success");
     setTimeout(() => { location.href = "/admin"; }, 400);
@@ -1291,14 +1485,15 @@ function updateAdminUI() {
   $("importBtn").style.display = admin ? "" : "none";
   $("exportBtn").style.display = admin ? "" : "none";
   $("adminBadge").style.display = admin ? "" : "none";
+  $("probesBtn").style.display = admin ? "" : "none";
   $("usersBtn").style.display = admin ? "" : "none";
 }
 
 // ==================== 批量导入 / 导出 ====================
-const CSV_PLACEHOLDER = `系统名称,资源类型,分类,域名,公网地址,内网地址,连接串,负责人,环境标识,备注,拨测监控,拨测状态码,拨测超时
-GitLab,网站,代码仓库,gitlab.company.com,https://git.company.com,http://10.0.0.10:8080,,张三,生产环境,SSO 登录,是,200|301,3s
-Redis-主库,缓存,中间件,,,,redis://10.0.1.5:6379/0,李四,生产环境,主从架构,否,,
-Kafka,消息队列,中间件,,,,10.0.3.4:9092,王五,生产环境,,否,,`;
+const CSV_PLACEHOLDER = `系统名称,资源类型,分类,域名,公网地址,内网地址,连接串,负责人,环境标识,备注,拨测监控,拨测状态码,拨测超时,拨测方法,拨测请求头,拨测Body,跟随重定向,跳过证书校验,私有CA路径
+GitLab,网站,代码仓库,gitlab.company.com,https://git.company.com,http://10.0.0.10:8080,,张三,生产环境,SSO 登录,是,200|301,3s,GET,"[""X-Custom-Token"",""abc123""]",,false,false,
+Redis-主库,缓存,中间件,,,,redis://10.0.1.5:6379/0,李四,生产环境,主从架构,是,,,,,,,,
+Kafka,消息队列,中间件,,,,10.0.3.4:9092,王五,生产环境,,是,,,,,,,,`;
 
 const JSON_PLACEHOLDER = `[
   {
@@ -1401,7 +1596,7 @@ function doExport(format) {
 // 草稿让你关掉再打开接着填。
 // 编辑模式不走草稿：它总是从数据库记录加载，草稿会污染编辑结果，所以 openEditSite 会清掉它。
 let siteDraft = null;
-const _SITE_FIELD_IDS = ["f_name","f_kind_custom","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_probe_codes","f_probe_timeout"];
+const _SITE_FIELD_IDS = ["f_name","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_probe_codes","f_probe_timeout","f_probe_protocol","f_probe_read_timeout","f_probe_send","f_probe_expect","f_probe_method","f_probe_follow_redirects","f_probe_headers","f_probe_body","f_probe_tls_ca"];
 
 function _readSiteFields() {
   const d = {};
@@ -1409,13 +1604,17 @@ function _readSiteFields() {
   d.f_kind = $("f_kind").value;
   d.f_environment = $("f_environment").value;
   d.f_monitor = $("f_monitor").checked;
+  d.f_probe_skip_verify = $("f_probe_skip_verify").checked;
   return d;
 }
 function _applySiteFields(d) {
   _SITE_FIELD_IDS.forEach(id => { $(id).value = d[id] || ""; });
   $("f_kind").value = d.f_kind || "网站";
   $("f_environment").value = d.f_environment || "生产环境";
+  if (!$("f_probe_protocol").value) $("f_probe_protocol").value = "tcp";  // select 不落到空
   $("f_monitor").checked = !!d.f_monitor;
+  $("f_probe_skip_verify").checked = !!d.f_probe_skip_verify;
+  toggleProbeSkip();
 }
 function _hasSiteContent() {
   const d = _readSiteFields();
@@ -1449,7 +1648,9 @@ function openSiteModal() {
   setTimeout(() => $("f_name").focus(), 100);
 }
 
-function openEditSite(siteId) {
+// siteId 从 data-edit-id 读，不走内联参数 —— 见 escapeAttr 的注释
+function openEditSite(btn) {
+  const siteId = btn.dataset.editId;
   const s = sites.find(x => x.id === siteId);
   if (!s) { showToast("数据不存在，请刷新页面", "error"); return; }
   siteDraft = null;   // 编辑始终从记录加载，不能拿新增草稿顶上来
@@ -1467,24 +1668,41 @@ function openEditSite(siteId) {
   $("f_monitor").checked = !!s.monitor;
   $("f_probe_codes").value = s.probe_status_codes || "";
   $("f_probe_timeout").value = s.probe_timeout || "";
+  $("f_probe_protocol").value = s.probe_protocol || "tcp";
+  $("f_probe_read_timeout").value = s.probe_read_timeout || "";
+  $("f_probe_send").value = escCtl(s.probe_send || "");
+  $("f_probe_expect").value = escCtl(s.probe_expect || "");
+  $("f_probe_method").value = s.probe_method || "";
+  $("f_probe_follow_redirects").value = s.probe_follow_redirects === true ? "true" : (s.probe_follow_redirects === false ? "false" : "");
+  $("f_probe_headers").value = s.probe_headers || "";
+  $("f_probe_body").value = s.probe_body || "";
+  $("f_probe_skip_verify").checked = !!s.probe_insecure_skip_verify;
+  $("f_probe_tls_ca").value = s.probe_tls_ca || "";
+  toggleProbeSkip();
   $("f_remark").value = s.remark || "";
-  // 回填 kind：预设类型选中，其他放到自定义输入框
-  const kind = s.kind || "网站";
-  if (KIND_META[kind]) {
-    $("f_kind").value = kind;
-    $("f_kind_custom").value = "";
-  } else {
-    $("f_kind").value = "";
-    $("f_kind_custom").value = kind;
-  }
+  // 回填 kind：现在只分「网站 / 非网站」，按是否走 HTTP 拨测（有无 URL）归入
+  $("f_kind").value = (s.public_url || s.private_url || s.domain) ? "网站" : "非网站";
   onKindChange();
   toggleProbeParams();
+  // 记住初始值做脏检查：只改复选框（如"跳过证书校验"）时 _hasSiteContent 感知不到，
+  // 靠快照 diff 才能拦住"关掉弹框改动静默丢失"
+  _editBaseline = _readSiteFields();
   $("siteModal").classList.add("show");
 }
 
+let _editBaseline = null;   // 编辑模式打开时的初始值快照，用于关闭前脏检查
+
 function closeSiteModal() {
-  // 新增模式下有内容就存草稿，下次打开接着填；编辑模式不存（内容由记录决定）
-  if (!$("editSiteId").value && _hasSiteContent()) siteDraft = _readSiteFields();
+  if ($("editSiteId").value) {
+    // 编辑模式：内容已改过就确认，防改动静默丢失（文本框 + 两个复选框）
+    if (_editBaseline && JSON.stringify(_readSiteFields()) !== JSON.stringify(_editBaseline)) {
+      if (!confirm("有未保存的修改，确定放弃吗？")) return;
+    }
+    _editBaseline = null;
+  } else if (_hasSiteContent()) {
+    // 新增模式：有内容存草稿，下次打开接着填
+    siteDraft = _readSiteFields();
+  }
   $("siteModal").classList.remove("show");
 }
 
@@ -1494,9 +1712,8 @@ async function saveSite(btn) {
   if (btn) { btn.disabled = true; btn.dataset.orig = btn.textContent; btn.textContent = "保存中…"; }
   try {
     const id = $("editSiteId").value;
-    const presetKind = $("f_kind").value;
-    const kind = presetKind ? presetKind : $("f_kind_custom").value.trim();
-    if (!kind) { showToast("请选择或填写资源类型", "error"); return; }
+    const kind = $("f_kind").value;
+    if (!kind) { showToast("请选择资源类型", "error"); return; }
     const data = {
       name: $("f_name").value.trim(),
       kind: kind,
@@ -1511,6 +1728,16 @@ async function saveSite(btn) {
       monitor: $("f_monitor").checked,
       probe_status_codes: $("f_probe_codes").value.trim(),
       probe_timeout: $("f_probe_timeout").value.trim(),
+      probe_protocol: $("f_probe_protocol").value,
+      probe_read_timeout: $("f_probe_read_timeout").value.trim(),
+      probe_send: $("f_probe_send").value,
+      probe_expect: $("f_probe_expect").value,
+      probe_method: $("f_probe_method").value,
+      probe_headers: $("f_probe_headers").value.trim(),
+      probe_body: $("f_probe_body").value,
+      probe_follow_redirects: $("f_probe_follow_redirects").value === "" ? null : $("f_probe_follow_redirects").value === "true",
+      probe_insecure_skip_verify: $("f_probe_skip_verify").checked,
+      probe_tls_ca: $("f_probe_tls_ca").value.trim(),
     };
     if (!data.name) { showToast("请输入名称", "error"); return; }
     if (!data.env) { showToast("请选择环境标识", "error"); return; }
@@ -1518,11 +1745,24 @@ async function saveSite(btn) {
     if (!data.public_url && !data.private_url && !data.domain && !data.connection) {
       showToast("域名/公网/内网/连接串至少填一个", "error"); return;
     }
+    // URL 主机名合法性 + 三字段不能指向同一个地址（与后端一致，前端先拦）
+    for (const [k, label] of [["domain", "域名"], ["public_url", "公网地址"], ["private_url", "内网地址"]]) {
+      const e = urlHostError(data[k], k);
+      if (e) { showToast(e, "error"); return; }
+    }
+    const dupUrl = dupUrlFieldsError(data);
+    if (dupUrl) { showToast(dupUrl, "error"); return; }
     if (data.monitor) {
-      if (!data.domain && !data.public_url && !data.private_url) {
-        showToast("勾选拨测监控需要至少填一个 URL 地址", "error"); return;
+      const hasUrl = data.domain || data.public_url || data.private_url;
+      if (!hasUrl && !data.connection) {
+        showToast("勾选拨测监控需要至少填一个 URL 地址或连接串", "error"); return;
       }
-      if (!validProbeParams(data.probe_status_codes, data.probe_timeout)) return;
+      // HTTP 拨测需要校验状态码/headers；端口拨测只需校验超时
+      if (!validProbeParams(hasUrl ? data.probe_status_codes : "", data.probe_timeout, hasUrl ? data.probe_headers : "")) return;
+      // 端口拨测：读超时格式与超时一致（纯数字自动按秒，或带单位 ms/s/m）
+      if (!hasUrl && data.probe_read_timeout && !/^(\d+(ms|s|m)?)?$/.test(data.probe_read_timeout)) {
+        showToast("读超时格式不对：只能填数字或加 ms / s / m 单位（如 500ms / 3s）", "error"); return;
+      }
     }
     if (id) {
       await api(`/api/sites/${id}`, { method: "PUT", body: JSON.stringify(data) });
@@ -1534,6 +1774,7 @@ async function saveSite(btn) {
     // 已落库：清草稿并重置表单。必须先重置再 closeSiteModal ——
     // closeSiteModal 在「新增模式 + 表单有内容」时会存草稿，顺序反了会把刚保存的内容又存成草稿
     siteDraft = null;
+    _editBaseline = null;   // 已落库，清脏检查快照，否则关闭弹框会误报"有未保存修改"
     _applySiteFields({});
     closeSiteModal();
     await loadSites();
@@ -1546,63 +1787,64 @@ async function saveSite(btn) {
 }
 
 // ==================== 资源类型切换 ====================
-// 预设类型 / 自定义 → 显示不同的字段
+// 资源类型只分「网站 / 非网站」：网站走 URL/HTTP，非网站走连接串/端口拨测
 function onKindChange() {
   const preset = $("f_kind").value;
-  const isCustom = (preset === "");
   const isSiteOnly = (preset === "网站");
-  const isConnOnly = !isCustom && !isSiteOnly; // 缓存/MQ/数据库/存储
-  // URL 字段：网站 / 自定义可见
+  const isConnOnly = !isSiteOnly; // 非网站
+  // URL 字段：网站可见
   $("urlFields").style.display = isConnOnly ? "none" : "";
-  // 连接串字段：非网站 / 自定义可见
+  // 连接串字段：非网站可见
   $("connField").style.display = isSiteOnly ? "none" : "";
-  // 提示和占位符
-  const meta = KIND_META[preset];
-  if (isCustom) {
-    $("connHint").textContent = "连接串形式（任意协议）：";
-    $("f_connection").placeholder = "如 vault://... / ldap://... / 任意连接信息";
+  if (isConnOnly) {
+    $("connHint").textContent = "非网站：填连接串（host:port 或任意协议 URL），用于 TCP/UDP 端口拨测";
+    $("f_connection").placeholder = "如 redis://10.0.1.5:6379/0 或 10.0.3.4:9092";
   } else {
-    $("connHint").textContent = meta ? meta.hint : "";
-    $("f_connection").placeholder = meta ? meta.placeholder : "";
+    $("connHint").textContent = "";
+    $("f_connection").placeholder = "";
   }
-  $("f_kind_custom").style.display = isCustom ? "" : "none";
   // 拨测按钮联动
   updateMonitorBtn();
 }
 
-// 拨测按钮联动：仅在有 URL 时可勾选（HTTP 拨测的硬前提）
+// 拨测按钮联动：有 URL → HTTP 拨测（完整配置）；无 URL 有连接串 → 端口拨测（仅超时）
 function updateMonitorBtn() {
   const hasUrl = $("f_domain").value.trim() || $("f_public_url").value.trim() || $("f_internal_url").value.trim();
-  const preset = $("f_kind").value;
-  const isConnOnly = (preset !== "" && preset !== "网站"); // 缓存/MQ/数据库/存储
+  const hasConn = $("f_connection").value.trim();
   const monitorCb = $("f_monitor");
   const paramsRow = $("probeParamsRow");
-  // 提示文案随联动状态切换（monitorEnabled / monitorState 由 refreshProbeStatus 拉取后调用本函数更新）
-  $("monitorHint").textContent = monitorEnabled
-    ? "仅当填了 URL 地址（域名/公网/内网）时可用；连接串形式的资源不支持拨测"
-    : monitorTip();
-  if (!monitorEnabled) {
-    // 联动未配置：整个拨测选项不可用，后端也会拒绝，这里先拦住
-    monitorCb.checked = false;
-    monitorCb.disabled = true;
-    monitorCb.style.opacity = ".5";
-    paramsRow.style.display = "none";
-  } else if (isConnOnly) {
-    // 预设的非 URL 类型强制不加入
-    monitorCb.checked = false;
-    monitorCb.disabled = true;
-    monitorCb.style.opacity = ".5";
-    paramsRow.style.display = "none";
-  } else if (hasUrl) {
+  const codesGroup = $("probeCodesGroup");
+  if (hasUrl) {
+    // HTTP 拨测：完整配置（状态码 + 超时 + 高级）
     monitorCb.disabled = false;
     monitorCb.style.opacity = "1";
+    $("monitorHint").textContent = "HTTP 拨测：探测 URL 状态码和响应";
+    codesGroup.style.display = "";
+    $("probeProtocolGroup").style.display = "none";  // HTTP 拨测不需要协议
+    $("probeNetAdvBlock").style.display = "none";    // HTTP 拨测不需要端口高级配置
     paramsRow.style.display = monitorCb.checked ? "" : "none";
+    $("probeAdvBlock").style.display = monitorCb.checked ? "" : "none";
+  } else if (hasConn) {
+    // 端口拨测：从连接串提取 host:port 做 TCP/UDP 连通性检测
+    monitorCb.disabled = false;
+    monitorCb.style.opacity = "1";
+    $("monitorHint").textContent = "端口拨测：从连接串自动提取 host:port 做 TCP/UDP 连通性检测";
+    codesGroup.style.display = "none";  // 端口拨测不需要状态码
+    $("probeProtocolGroup").style.display = "";  // 端口拨测可选手动选择 TCP/UDP
+    paramsRow.style.display = monitorCb.checked ? "" : "none";
+    $("probeAdvBlock").style.display = "none";  // 端口拨测不需要 HTTP 高级配置
+    $("probeNetAdvBlock").style.display = monitorCb.checked ? "" : "none";  // 端口高级「发送与响应匹配」
+    updateProbeNetUdpHint();
   } else {
     monitorCb.checked = false;
     monitorCb.disabled = true;
     monitorCb.style.opacity = ".5";
+    $("monitorHint").textContent = "填入 URL 地址或连接串后可启用拨测监控";
     paramsRow.style.display = "none";
+    $("probeAdvBlock").style.display = "none";
+    $("probeNetAdvBlock").style.display = "none";
   }
+  updateProbeTls();
 }
 
 // ==================== 快捷加入/取消监控 ====================
@@ -1618,12 +1860,158 @@ function sitePayload(s, overrides = {}) {
     monitor: !!s.monitor,
     probe_status_codes: s.probe_status_codes || "",
     probe_timeout: s.probe_timeout || "",
+    probe_method: s.probe_method || "",
+    probe_headers: s.probe_headers || "",
+    probe_body: s.probe_body || "",
+    probe_follow_redirects: s.probe_follow_redirects === true || s.probe_follow_redirects === false ? s.probe_follow_redirects : null,
+    probe_insecure_skip_verify: !!s.probe_insecure_skip_verify,
+    probe_tls_ca: s.probe_tls_ca || "",
     ...overrides,
   };
 }
 
+// 与后端 SiteIn._norm_url_field / _url_host_error 一致：前端先拦，省一次 422 往返
+// 只返回错误信息字符串；空串表示合法
+const URL_PLACEHOLDERS = new Set(["-", "--", "---", "—", "–", "／", "/", "\\", "*", "×",
+  "无", "暂无", "无。", "空白", "N/A", "n/a", "None", "none", "null", "NULL", "nil"]);
+// IP 字面量校验，与后端 _is_valid_ip（ipaddress 模块）同一口径。
+// 自己写 \d{1,3} 正则只会放过 999.1.1.1 / 256.0.0.1 这类每段超界的地址。
+// 返回 true/false；不含冒号且含字母时返回 null —— 不是 IP，交给域名校验
+function isValidIp(h) {
+  if (!h.includes(":")) {
+    if (/[A-Za-z]/.test(h)) return null;
+    return h.split(".").length === 4 && h.split(".").every(
+      (s) => /^\d{1,3}$/.test(s) && Number(s) <= 255 && !/^0\d/.test(s)
+    );
+  }
+  // IPv6：允许一个 :: 压缩；嵌入式 IPv4 尾段（::ffff:1.2.3.4）先单独校验再当作一段
+  if (!/^[0-9a-f:.%]+$/i.test(h) || h.includes(":::")) return false;
+  let body = h.toLowerCase();
+  const m4 = body.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (m4) {
+    if (m4[1].split(".").some((o) => Number(o) > 255)) return false;
+    body = body.slice(0, -m4[1].length);
+  }
+  const halves = body.split("::");
+  if (halves.length > 2) return false;                       // :: 出现两次以上
+  const segs = [...halves[0].split(":"), ...(halves[1] || "").split(":")]
+    .filter((s) => s !== "");
+  if (segs.length > 8) return false;
+  if (halves.length === 1 && segs.length !== 8) return false; // 没有 :: 就必须凑满 8 段
+  return segs.every((s) => /^[0-9a-f]{1,4}$/.test(s));
+}
+
+// IP 归属判定，与后端 _classify_ip 一致：RFC 1918 + 环回 + 链路本地。
+// 域名返回 null（校验时不发 DNS 请求，无法判定），公网/内网两个字段都放行
+function classifyIp(h) {
+  if (!h) return null;
+  h = h.split("%")[0];                                   // 剥掉 zone id（fe80::1%eth0）
+  if (h.includes(":")) {
+    const m = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
+    if (m) return classifyIp(m[1]);                     // IPv4 映射地址按内嵌 IPv4 判
+    if (!/^[0-9a-f:.]+$/i.test(h)) return null;
+    if (h === "::" || h === "::1" || /^f[cd]/i.test(h) || /^fe[89a-f]/i.test(h)) return "internal";
+    return "public";
+  }
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return null;   // 不是 IPv4 字面量
+  const [a, b] = h.split(".").map(Number);
+  if (a === 10 || a === 127) return "internal";
+  if (a === 172 && b >= 16 && b <= 31) return "internal";
+  if (a === 192 && b === 168) return "internal";
+  if (a === 169 && b === 254) return "internal";
+  return "public";
+}
+
+// 拆 http(s) 地址：返回 {scheme, netloc, host, port, path}
+// 转小写、跳过 userinfo；IPv6 必须带方括号，漏了方括号时 host 为空
+function splitUrl(raw) {
+  const s = (raw || "").trim().toLowerCase();
+  if (!s) return null;
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//.test(s) ? s : "http://" + s;
+  const rest = withScheme.slice(withScheme.indexOf("://") + 3);
+  const cut = rest.search(/[/?#]/);
+  let netloc = cut < 0 ? rest : rest.slice(0, cut);
+  const path = cut < 0 ? "" : rest.slice(cut);
+  const at = netloc.lastIndexOf("@");
+  if (at >= 0) netloc = netloc.slice(at + 1);
+  let host = netloc, port = "";
+  if (netloc.startsWith("[")) {
+    const end = netloc.indexOf("]");
+    if (end < 0) return { scheme: withScheme.slice(0, 3), netloc, host: "", port: "", path };
+    host = netloc.slice(1, end);
+    if (netloc.slice(end + 1).startsWith(":")) port = netloc.slice(end + 2);
+  } else {
+    const ci = netloc.indexOf(":");
+    if (ci >= 0) { host = netloc.slice(0, ci); port = netloc.slice(ci + 1); }
+  }
+  return { scheme: withScheme.slice(0, withScheme.indexOf(":")), netloc, host, port, path };
+}
+
+// URL 主机名/端口合法性。与后端 _url_host_error 一致，返回错误信息，空串表示合法。
+// field 是 "domain" / "public_url" / "private_url"：域名不填 IP，公网/内网各放各的
+function urlHostError(v, field) {
+  const raw = (v || "").trim();
+  if (!raw) return "";
+  if (URL_PLACEHOLDERS.has(raw)) return `该字段是占位符 ${raw}，请留空或填真实地址`;
+  const p = splitUrl(raw);
+  if (!p || !p.netloc) return "URL 格式不合法，应为 http(s)://host[/path]";
+  if (!/^[\x00-\x7F]+$/.test(p.netloc)) {
+    return `域名含非 ASCII 字符：${p.netloc}（请改用 punycode 写法，如 xn-- 开头）`;
+  }
+  if (!p.host) return "URL 格式不合法：IPv6 地址需加方括号，如 http://[::1]:8080";
+  if (p.port) {
+    if (!/^\d+$/.test(p.port)) return `端口不合法：${p.netloc}（应为 1-65535 之间的数字）`;
+    const port = Number(p.port);
+    if (port < 1 || port > 65535) return `端口不合法：${port}（应为 1-65535 之间的数字）`;
+  }
+  const ipErr = isValidIp(p.host);
+  if (ipErr === false) return `IP 地址不合法：${p.host}（请检查格式，IPv4 每段需在 0-255 范围内）`;
+  if (ipErr) {
+    const kind = classifyIp(p.host);
+    if (field === "domain") return `域名不能填 IP 地址（${p.host}），请填到 公网地址 / 内网地址`;
+    if (field === "public_url" && kind === "internal") return `公网地址不能填内网 IP（${p.host}），请填到 内网地址`;
+    if (field === "private_url" && kind === "public") return `内网地址不能填公网 IP（${p.host}），请填到 公网地址`;
+    return "";
+  }
+  if (!/^[A-Za-z0-9.-]+$/.test(p.host)) {
+    return `域名含非法字符：${p.host}（只允许字母、数字、点和连字符）`;
+  }
+  if (p.host.startsWith(".") || p.host.endsWith(".")) return `域名不能以点开头或结尾：${p.host}`;
+  for (const label of p.host.split(".")) {
+    if (!label) return `域名含空标签：${p.host}（不能有连续的点）`;
+    if (label.startsWith("-") || label.endsWith("-")) return `域名标签不能以连字符开头或结尾：${label}`;
+  }
+  return "";
+}
+
+// 归一化用于比较：转小写、去 scheme、去默认端口、去尾斜杠。与后端 _norm_url 一致。
+// 去 scheme 是有意的：http://x:3208 与 https://x:3208 是同一个服务（同 host:port），
+// 前端若不归一，同一条记录里两个字段各填一个就不会被拦住
+function normUrl(v) {
+  const s = (v || "").trim().toLowerCase();
+  if (!s) return "";
+  const p = splitUrl(s);
+  if (!p || !p.host) return s.replace(/\/+$/, "");          // 解析不出主机：退化成字面比较
+  const port = ((p.scheme === "http" && p.port === "80") || (p.scheme === "https" && p.port === "443"))
+    ? "" : p.port;
+  return (p.host + (port ? ":" + port : "") + p.path).replace(/\/+$/, "");
+}
+
+// 域名/公网/内网不能指向同一个地址。返回错误信息，空串表示合法
+function dupUrlFieldsError(data) {
+  const fields = [["domain", "域名"], ["public_url", "公网地址"], ["private_url", "内网地址"]];
+  const seen = {};
+  for (const [k, label] of fields) {
+    const n = normUrl(data[k]);
+    if (!n) continue;
+    if (seen[n]) return `${label} 与 ${seen[n]} 重复：${n}（域名/公网/内网不能指向同一个地址）`;
+    seen[n] = label;
+  }
+  return "";
+}
+
 // 与后端校验一致（后端会把纯数字补成 s）；返回 false 时已弹提示
-function validProbeParams(codes, timeout) {
+function validProbeParams(codes, timeout, headersRaw) {
   if (codes && !/^(\d{3}(\|\d{3})*)?$/.test(codes)) {
     showToast("期望状态码格式不对：3 位数字，多个用 | 分隔（如 200|301）", "error");
     return false;
@@ -1632,28 +2020,169 @@ function validProbeParams(codes, timeout) {
     showToast("超时时长格式不对：可只填数字按秒（如 3），或 3s / 500ms / 1m", "error");
     return false;
   }
+  if (headersRaw) {
+    try {
+      const arr = JSON.parse(headersRaw);
+      if (!Array.isArray(arr) || !arr.every(h => typeof h === "string")) {
+        showToast("请求头格式不对：应为字符串数组，如 [\"X-Key\",\"val\"]", "error");
+        return false;
+      }
+    } catch (e) {
+      showToast("请求头不是合法 JSON：如 [\"X-Key\",\"val\"]", "error");
+      return false;
+    }
+  }
   return true;
 }
 
-function toggleProbeParams() {
+// clearWhenUnchecked：用户主动取消勾选时清空参数，避免残留脏数据
+// （后端 monitor=false 时不读这些字段，但留着没意义）。
+// 打开编辑弹框时**不要**传 true：库里 monitor=false 但保留了拨测参数的记录
+// （CSV 导入不校验这俩的搭配），清空会让用户根本看不到它们，而脏检查快照
+// 是在清空之后才拍的、感知不到差异，改别的字段保存就把参数覆盖成空串。
+function toggleProbeParams(clearWhenUnchecked = false) {
   const checked = $("f_monitor").checked;
-  $("probeParamsRow").style.display = checked ? "" : "none";
-  // 取消勾选时清空参数，避免残留脏数据（后端 monitor=false 时不读这两个字段，但留着没意义）
-  if (!checked) {
+  // 可见性统一交给 updateMonitorBtn()：它知道当前是 HTTP 拨测还是端口拨测。
+  // 这里原先无条件显示 probeAdvBlock，会覆盖 updateMonitorBtn 对端口拨测的隐藏，
+  // 让缓存/数据库这类资源也能填请求方法/请求头/Body —— 这些 HTTP 专用字段
+  // 前后端都只在有 URL 时才校验，脏值原样落库，之后给记录补上 URL 就立刻生效。
+  updateMonitorBtn();
+  if (!checked && clearWhenUnchecked) {
     $("f_probe_codes").value = "";
     $("f_probe_timeout").value = "";
+    $("f_probe_method").value = "";
+    $("f_probe_follow_redirects").value = "";
+    $("f_probe_headers").value = "";
+    $("f_probe_body").value = "";
+    $("f_probe_skip_verify").checked = false;
+    $("f_probe_tls_ca").value = "";
   }
 }
 
-function openProbeModal(siteId) {
+// 端口拨测：协议切到 UDP 时提示判活不可靠（对齐原 categraf-http-admin）
+function updateProbeNetUdpHint() {
+  const isUdp = $("f_probe_protocol").value === "udp";
+  $("probeUdpHint").style.display = isUdp ? "block" : "none";
+}
+
+// 端口拨测：展开/收起「发送与响应匹配」高级配置
+function toggleProbeNetAdv() {
+  const g = $("probeNetAdvGroup");
+  const show = g.style.display === "none";
+  g.style.display = show ? "" : "none";
+  $("probeNetAdvToggle").innerHTML = (show ? "▾" : "▸") + " 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）";
+}
+
+// 跳过校验与私有 CA 互斥（对齐后端 _normalize_probe_tls：跳过优先，清空 CA）
+function toggleProbeSkip() {
+  const skip = $("f_probe_skip_verify").checked;
+  const ca = $("f_probe_tls_ca");
+  if (skip) {
+    ca.value = "";
+    ca.disabled = true;
+    ca.style.opacity = ".5";
+  } else {
+    ca.disabled = false;
+    ca.style.opacity = "1";
+  }
+}
+
+// 拨测地址是 HTTPS 时显示 TLS 配置块
+function updateProbeTls() {
+  const probeUrl = $("f_domain").value.trim() || $("f_public_url").value.trim() || $("f_internal_url").value.trim();
+  const isHttps = /^https:\/\//i.test(probeUrl);
+  $("probeTlsBlock").style.display = (isHttps && $("f_monitor").checked) ? "" : "none";
+  if (!isHttps) {
+    $("f_probe_skip_verify").checked = false;
+    $("f_probe_tls_ca").value = "";
+    toggleProbeSkip();
+  }
+}
+
+// 拨测地址是 HTTPS 时才显示 TLS 配置块（与新增弹框的 updateProbeTls 同一规则）
+function updateProbeQuickTls() {
+  const s = sites.find(x => x.id === $("probeSiteId").value);
+  const probeUrl = s ? (s.domain || s.public_url || s.private_url || "") : "";
+  const isHttps = /^https:\/\//i.test(probeUrl);
+  $("probeQuickTls").style.display = isHttps ? "" : "none";
+  if (!isHttps) {
+    $("probeSkipVerify").checked = false;
+    $("probeTlsCa").value = "";
+    toggleProbeQuickSkip();
+  }
+}
+
+// 跳过校验与私有 CA 互斥（对齐后端 _normalize_probe_tls：跳过优先，清空 CA）
+function toggleProbeQuickSkip() {
+  const skip = $("probeSkipVerify").checked;
+  const ca = $("probeTlsCa");
+  if (skip) {
+    ca.value = ""; ca.disabled = true; ca.style.opacity = ".5";
+  } else {
+    ca.disabled = false; ca.style.opacity = "1";
+  }
+}
+
+// 快捷加入监控弹窗的拨测类型：http（有 URL）/ port（仅连接串）
+let probeModalMode = "http";
+
+// 快捷弹窗端口拨测：协议切到 UDP 时提示判活不可靠
+function updateProbeQuickUdpHint() {
+  const isUdp = $("probeProtocol").value === "udp";
+  $("probeQuickUdpHint").style.display = isUdp ? "block" : "none";
+}
+
+// 快捷弹窗端口拨测：展开/收起「发送与响应匹配」
+function toggleProbeQuickNetAdv() {
+  const g = $("probeQuickNetAdvGroup");
+  const show = g.style.display === "none";
+  g.style.display = show ? "" : "none";
+  $("probeQuickAdvToggle").innerHTML = (show ? "▾" : "▸") + " 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）";
+}
+
+// id 从 data-site-id 读，不走内联参数 —— 见 escapeAttr 的注释
+function openProbeModal(btn) {
+  const siteId = btn.dataset.siteId;
   const s = sites.find(x => x.id === siteId);
   if (!s) { showToast("数据不存在，请刷新页面", "error"); return; }
+  const hasUrl = hasAnyUrl(s);
+  const hasConn = !!(s.connection || "").trim();
+  if (!hasUrl && !hasConn) { showToast("该资源没有可拨测的 URL 或连接串", "error"); return; }
+  probeModalMode = !hasUrl && hasConn ? "port" : "http";
+  const isPort = probeModalMode === "port";
   $("probeSiteId").value = s.id;
   $("probeSiteName").textContent = `系统：${s.name}`;
-  $("probeCodes").value = s.probe_status_codes || "200";
-  $("probeTimeout").value = s.probe_timeout || "";
+  $("probePortFields").style.display = isPort ? "" : "none";
+  $("probeHttpFields").style.display = isPort ? "none" : "";
+  $("probeHintP").textContent = isPort
+    ? "协议默认 TCP；连接超时可只填数字自动按秒（如 3 = 3s），留空不设置。探测地址取自连接串的 host:port。"
+    : "状态码多个用 | 分隔（如 200|301），留空默认 200；超时可只填数字自动按秒（如 3 = 3s），留空不设置。探测地址：域名 &gt; 公网 &gt; 内网。TLS 选项只在探测地址是 https 时出现。";
+  if (isPort) {
+    $("probeProtocol").value = s.probe_protocol || "tcp";
+    $("probePortTimeout").value = s.probe_timeout || "";
+    $("probeSend").value = escCtl(s.probe_send || "");
+    $("probeExpect").value = escCtl(s.probe_expect || "");
+    $("probeReadTimeout").value = s.probe_read_timeout || "";
+    $("probeQuickNetAdvGroup").style.display = "none";
+    $("probeQuickAdvToggle").innerHTML = "▸ 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）";
+    updateProbeQuickUdpHint();
+  } else {
+    // 已有参数原样回填：monitor=false 但保留了拨测参数的记录（CSV 导入不校验这俩搭配）
+    // 不能清空，否则用户看不到也改不了
+    $("probeCodes").value = s.probe_status_codes || "200";
+    $("probeTimeout").value = s.probe_timeout || "";
+    $("probeMethod").value = s.probe_method || "";
+    $("probeFollow").value = (s.probe_follow_redirects === true || s.probe_follow_redirects === false)
+      ? String(s.probe_follow_redirects) : "";
+    $("probeHeaders").value = s.probe_headers || "";
+    $("probeBody").value = s.probe_body || "";
+    $("probeSkipVerify").checked = !!s.probe_insecure_skip_verify;
+    $("probeTlsCa").value = s.probe_tls_ca || "";
+  }
+  toggleProbeQuickSkip();
+  updateProbeQuickTls();
   $("probeModal").classList.add("show");
-  setTimeout(() => $("probeCodes").focus(), 100);
+  setTimeout(() => { (isPort ? $("probeProtocol") : $("probeCodes")).focus(); }, 100);
 }
 function closeProbeModal() {
   $("probeModal").classList.remove("show");
@@ -1667,12 +2196,35 @@ async function confirmProbeJoin(btn) {
     const id = $("probeSiteId").value;
     const s = sites.find(x => x.id === id);
     if (!s) { closeProbeModal(); return; }
-    const codes = $("probeCodes").value.trim() || "200";
-    const timeout = $("probeTimeout").value.trim();
-    if (!validProbeParams(codes, timeout)) return;
+    const isPort = probeModalMode === "port";
+    const timeout = isPort ? $("probePortTimeout").value.trim() : $("probeTimeout").value.trim();
+    const codes = isPort ? "" : ($("probeCodes").value.trim() || "200");
+    const headers = isPort ? "" : $("probeHeaders").value.trim();
+    if (!validProbeParams(codes, timeout, headers)) return;
+    const overrides = { monitor: true };
+    if (isPort) {
+      const readTimeout = $("probeReadTimeout").value.trim();
+      if (readTimeout && !/^(\d+(ms|s|m)?)?$/.test(readTimeout)) {
+        showToast("读超时格式不对：只能填数字或加 ms / s / m 单位（如 500ms / 3s）", "error"); return;
+      }
+      overrides.probe_protocol = $("probeProtocol").value;
+      overrides.probe_timeout = timeout;
+      overrides.probe_read_timeout = readTimeout;
+      overrides.probe_send = $("probeSend").value;
+      overrides.probe_expect = $("probeExpect").value;
+    } else {
+      overrides.probe_status_codes = codes;
+      overrides.probe_timeout = timeout;
+      overrides.probe_method = $("probeMethod").value;
+      overrides.probe_follow_redirects = $("probeFollow").value === "" ? null : $("probeFollow").value === "true";
+      overrides.probe_headers = headers;
+      overrides.probe_body = $("probeBody").value;
+      overrides.probe_insecure_skip_verify = $("probeSkipVerify").checked;
+      overrides.probe_tls_ca = $("probeTlsCa").value.trim();
+    }
     await api(`/api/sites/${id}`, {
       method: "PUT",
-      body: JSON.stringify(sitePayload(s, { monitor: true, probe_status_codes: codes, probe_timeout: timeout })),
+      body: JSON.stringify(sitePayload(s, overrides)),
     });
     closeProbeModal();
     await loadSites();
@@ -1685,8 +2237,10 @@ async function confirmProbeJoin(btn) {
   }
 }
 
-async function quickMonitorOff(siteId) {
+// siteId 从 data-site-id 读，不走内联参数 —— 见 escapeAttr 的注释
+async function quickMonitorOff(btn) {
   if (_busy) return;
+  const siteId = btn.dataset.siteId;
   const s = sites.find(x => x.id === siteId);
   if (!s) return;
   if (!confirm(`确定将「${s.name}」移出拨测监控？`)) return;
@@ -1706,7 +2260,11 @@ async function quickMonitorOff(siteId) {
 }
 
 // ==================== 删除 ====================
-function openDeleteModal(id, name, env) {
+// id / name / env 从 data-del-* 读，不走内联参数 —— 见 escapeAttr 的注释
+function openDeleteModal(el) {
+  const id = el.dataset.delId;
+  const name = el.dataset.delName;
+  const env = el.dataset.delEnv || null;
   deleteTargetId = id;
   deleteTargetEnv = env || null;
   const nameKey = (name || "").trim().toLowerCase();
@@ -1796,9 +2354,9 @@ async function renderUsers() {
         <span class="env-tag ${u.role === "admin" ? "env-prod" : "env-test"}">${u.role === "admin" ? "管理员" : "普通用户"}</span>
         <span class="env-tag ${u.enabled ? "env-probe" : "env-off"}">${u.enabled ? "启用" : "已禁用"}</span>
         <span style="flex:1"></span>
-        <button class="btn btn-default btn-sm" onclick="toggleUser('${u.id}', ${!u.enabled})">${u.enabled ? "禁用" : "启用"}</button>
-        <button class="btn btn-default btn-sm" onclick="resetUserPassword('${u.id}','${escapeAttr(u.username)}')">改密码</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteUser('${u.id}','${escapeAttr(u.username)}')">删除</button>
+        <button class="btn btn-default btn-sm" data-uid="${escapeAttr(u.id)}" data-enable="${u.enabled ? 0 : 1}" onclick="toggleUser(this)">${u.enabled ? "禁用" : "启用"}</button>
+        <button class="btn btn-default btn-sm" data-uid="${escapeAttr(u.id)}" data-uname="${escapeAttr(u.username)}" onclick="resetUserPassword(this)">改密码</button>
+        <button class="btn btn-danger btn-sm" data-uid="${escapeAttr(u.id)}" data-uname="${escapeAttr(u.username)}" onclick="deleteUser(this)">删除</button>
       </div>
     `).join("");
   } catch (e) {
@@ -1820,7 +2378,10 @@ async function createUser() {
   } catch (e) { showToast("创建失败: " + e.message, "error"); }
 }
 
-async function toggleUser(id, enable) {
+// id / 目标启用态从 data-* 读，不走内联参数 —— 见 escapeAttr 的注释
+async function toggleUser(btn) {
+  const id = btn.dataset.uid;
+  const enable = btn.dataset.enable === "1";
   try {
     await api(`/api/users/${id}`, { method: "PUT", body: JSON.stringify({ enabled: enable }) });
     await renderUsers();
@@ -1828,17 +2389,23 @@ async function toggleUser(id, enable) {
   } catch (e) { showToast(e.message, "error"); }
 }
 
-async function resetUserPassword(id, username) {
-  const pw = prompt(`为「${username}」设置新密码\n（≥10 位，含字母+数字）`);
+async function resetUserPassword(btn) {
+  const id = btn.dataset.uid;
+  const username = btn.dataset.uname;
+  const pw = prompt(`为「${username}」设置新密码\n（≥10 位，含字母+数字，≤256 字符）`);
   if (pw === null) return;
   if (!pw) { showToast("密码不能为空", "error"); return; }
+  // prompt() 没有 maxlength，超长会打到后端变 422
+  if (pw.length > 256) { showToast(`密码过长（${pw.length} 字符，上限 256）`, "error"); return; }
   try {
     await api(`/api/users/${id}/password`, { method: "POST", body: JSON.stringify({ password: pw }) });
     showToast("密码已重置（该用户旧会话立即失效）", "success");
   } catch (e) { showToast("重置失败: " + e.message, "error"); }
 }
 
-async function deleteUser(id, username) {
+async function deleteUser(btn) {
+  const id = btn.dataset.uid;
+  const username = btn.dataset.uname;
   if (!confirm(`确定删除用户「${username}」？`)) return;
   try {
     await api(`/api/users/${id}`, { method: "DELETE" });

@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>端口拨测管理 - 内部系统导航</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231677ff'/><rect x='5' y='5' width='9.5' height='9.5' rx='2.5' fill='%23fff'/><rect x='17.5' y='5' width='9.5' height='9.5' rx='2.5' fill='%23fff'/><rect x='5' y='17.5' width='9.5' height='9.5' rx='2.5' fill='%23fff'/><rect x='17.5' y='17.5' width='9.5' height='9.5' rx='2.5' fill='%23fff'/></svg>">
+<meta name="theme-color" content="#1677ff">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f0f2f5; color: #333; min-height: 100vh;
+  }
+  .header {
+    background: #fff; border-bottom: 1px solid #e8e8e8; padding: 16px 32px;
+    display: flex; align-items: center; gap: 24px;
+    position: sticky; top: 0; z-index: 100;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+  .header h1 { font-size: 20px; font-weight: 600; color: #1a1a1a; white-space: nowrap; }
+  .header-actions { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+  .btn {
+    padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px;
+    cursor: pointer; transition: all 0.2s; font-weight: 500;
+  }
+  .btn-primary { background: #1677ff; color: #fff; }
+  .btn-primary:hover { background: #4096ff; }
+  .btn-default { background: #fff; color: #333; border: 1px solid #d9d9d9; }
+  .btn-default:hover { border-color: #1677ff; color: #1677ff; }
+  .btn-danger { background: #ff4d4f; color: #fff; }
+  .btn-danger:hover { background: #ff7875; }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+  .container { padding: 24px 32px 40px; max-width: 1100px; margin: 0 auto; }
+
+  .info-bar {
+    background: #e6f4ff; border: 1px solid #91caff; border-radius: 8px;
+    padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: #0958d9;
+    line-height: 1.6;
+  }
+  .info-bar code {
+    background: rgba(22,119,255,.1); padding: 1px 6px; border-radius: 3px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
+  }
+
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; border: 1px solid #e8e8e8; }
+  th, td { padding: 12px 14px; text-align: left; font-size: 13px; border-bottom: 1px solid #f0f0f0; }
+  th { background: #fafafa; font-weight: 600; color: #666; font-size: 12px; white-space: nowrap; }
+  tr:hover td { background: #f9f9f9; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+  .tag {
+    display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 500;
+  }
+  .tag-tcp { background: #e6f4ff; color: #1677ff; }
+  .tag-udp { background: #fff7e6; color: #fa8c16; }
+
+  .empty-state { text-align: center; padding: 60px 20px; color: #999; }
+  .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+
+  /* TOML 预览卡片 */
+  .preview-card {
+    margin-top: 24px; background: #fff; border: 1px solid #e8e8e8;
+    border-radius: 10px; padding: 20px 24px;
+  }
+  .preview-header {
+    display: flex; align-items: center; gap: 16px; margin-bottom: 14px;
+  }
+  .preview-header h3 { font-size: 15px; color: #1a1a1a; }
+  .preview-meta { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: #666; }
+  .preview-meta code {
+    background: #f5f5f5; padding: 2px 8px; border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
+  }
+  .preview-block { margin-top: 12px; }
+  .preview-block-title {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 13px; font-weight: 600; color: #555; margin-bottom: 6px;
+  }
+  .preview-block pre {
+    background: #1e1e1e; color: #d4d4d4; border-radius: 8px; padding: 14px 16px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px; line-height: 1.6; overflow-x: auto; white-space: pre;
+    max-height: 420px; overflow-y: auto;
+  }
+  .preview-block pre:empty::before { content: "（无配置）"; color: #888; }
+  .preview-hint { font-size: 11px; color: #999; margin-top: 10px; }
+
+  /* 模态框 */
+  .modal-mask {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45);
+    z-index: 1000; align-items: center; justify-content: center;
+  }
+  .modal-mask.open { display: flex; }
+  .modal {
+    background: #fff; border-radius: 10px; padding: 24px; width: 520px;
+    max-width: 92vw; max-height: 85vh; overflow-y: auto;
+    box-shadow: 0 6px 24px rgba(0,0,0,.15);
+  }
+  .modal h3 { font-size: 16px; margin-bottom: 16px; color: #1a1a1a; }
+  .form-group { margin-bottom: 14px; }
+  .form-group label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 4px; color: #555; }
+  .form-group input, .form-group select, .form-group textarea {
+    width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px;
+    font-size: 14px; outline: none; transition: border-color .2s;
+  }
+  .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+    border-color: #1677ff; box-shadow: 0 0 0 2px rgba(22,119,255,.1);
+  }
+  .form-group .hint { font-size: 11px; color: #999; margin-top: 3px; }
+  .form-row { display: flex; gap: 12px; }
+  .form-row .form-group { flex: 1; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+
+  .toast {
+    position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+    padding: 10px 20px; border-radius: 6px; font-size: 14px; z-index: 2000;
+    display: none; box-shadow: 0 2px 8px rgba(0,0,0,.15);
+  }
+  .toast.success { background: #f6ffed; border: 1px solid #b7eb8f; color: #389e0d; }
+  .toast.error { background: #fff2f0; border: 1px solid #ffccc7; color: #cf1322; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>📡 端口拨测管理</h1>
+  <div class="header-actions">
+    <button class="btn btn-default" onclick="location.href='/'">← 返回导航</button>
+    <button class="btn btn-default" onclick="renderProbes()">🔄 刷新</button>
+  </div>
+</div>
+
+<div class="container">
+  <div class="info-bar">
+    本页为只读总览，展示由站点生成的端口拨测目标。新增 / 编辑 / 删除拨测目标请到<b>首页站点填写页</b>：
+    添加或编辑资源时勾选「拨测监控」，非网站资源（无 URL、仅连接串）会自动提取
+    <code>host:port</code> 走 TCP/UDP 端口拨测，并可在弹窗中选择<b>协议</b>与<b>连接超时时间</b>。
+    categraf 通过 <code>http_provider</code> 从本服务拉取配置，配置版本为内容 MD5，内容不变则不重启采集实例。
+  </div>
+
+  <div id="content"></div>
+
+  <!-- TOML 配置预览（对齐原 categraf-http-admin 管理页） -->
+  <div class="preview-card" id="previewCard" style="display:none;">
+    <div class="preview-header">
+      <h3>当前生成的 TOML 配置</h3>
+      <div class="preview-meta">
+        <span>版本 <code id="previewVersion">-</code></span>
+        <button class="btn btn-default btn-sm" onclick="copyAllToml()">📋 复制全部</button>
+      </div>
+    </div>
+    <div class="preview-block">
+      <div class="preview-block-title">
+        <span>HTTP 拨测（http_response，来自站点监控目标）</span>
+        <button class="btn btn-default btn-sm" onclick="copyToml('http')">📋 复制</button>
+      </div>
+      <pre id="previewHttp">加载中...</pre>
+    </div>
+    <div class="preview-block">
+      <div class="preview-block-title">
+        <span>端口拨测（net_response）</span>
+        <button class="btn btn-default btn-sm" onclick="copyToml('net')">📋 复制</button>
+      </div>
+      <pre id="previewNet">加载中...</pre>
+    </div>
+    <div class="preview-hint">版本为配置内容 MD5，内容不变则 categraf 不会重启采集实例。保存站点或拨测目标后自动刷新。</div>
+  </div>
+</div>
+
+<!-- 添加/编辑模态框 -->
+<div class="modal-mask" id="editModal">
+  <div class="modal">
+    <h3 id="modalTitle">添加拨测目标</h3>
+    <div class="form-row">
+      <div class="form-group">
+        <label>目标地址 *</label>
+        <input type="text" id="f_url" maxlength="200" placeholder="如 10.0.0.1:22">
+        <div class="hint">host:port 格式</div>
+      </div>
+      <div class="form-group" style="max-width:120px;">
+        <label>协议</label>
+        <select id="f_protocol">
+          <option value="tcp">TCP</option>
+          <option value="udp">UDP</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>名称 (job) *</label>
+      <input type="text" id="f_job" maxlength="100" placeholder="如 跳板机SSH">
+      <div class="hint">用于 [mappings] 中的 job 标签</div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>连接超时</label>
+        <input type="text" id="f_timeout" placeholder="如 3s，留空用默认 1s">
+      </div>
+      <div class="form-group">
+        <label>读超时</label>
+        <input type="text" id="f_read_timeout" placeholder="如 3s，留空用默认 3s">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>发送内容 (send)</label>
+      <input type="text" id="f_send" maxlength="500" placeholder="如 \r\n，留空不发送">
+      <div class="hint">支持 \r \n \t 转义</div>
+    </div>
+    <div class="form-group">
+      <label>期望响应包含 (expect)</label>
+      <input type="text" id="f_expect" maxlength="500" placeholder="不填则仅检测连通">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-default" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveProbe()" id="saveBtn">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 删除确认 -->
+<div class="modal-mask" id="deleteModal">
+  <div class="modal" style="width:400px;">
+    <h3>确认删除</h3>
+    <p style="font-size:14px; color:#555; margin-bottom:8px;">确定删除拨测目标 <strong id="delName"></strong> 吗？</p>
+    <p style="font-size:12px; color:#999;">删除后 categraf 下次拉取配置时将不再包含此目标。</p>
+    <div class="modal-actions">
+      <button class="btn btn-default" onclick="closeModal()">取消</button>
+      <button class="btn btn-danger" onclick="confirmDelete()">删除</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let token = localStorage.getItem("nav_token") || "";
+let role = localStorage.getItem("nav_role") || "user";
+let probes = [];
+let editingId = null;
+let deletingId = null;
+
+const $ = (id) => document.getElementById(id);
+
+if (!token) { location.href = "/admin"; }
+
+async function api(url, options = {}) {
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (token) headers["Authorization"] = "Bearer " + token;
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401) {
+    token = ""; role = "user";
+    localStorage.removeItem("nav_token");
+    localStorage.removeItem("nav_role");
+    showToast("登录已过期，请重新登录", "error");
+    setTimeout(() => { location.href = "/admin"; }, 800);
+    throw new Error("未授权");
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(apiError(data, "请求失败"));
+  return data;
+}
+
+// FastAPI 的错误 detail 有两种形状：HTTPException 是字符串，
+// Pydantic 校验失败（422，字段超长/格式不合法）是数组。
+// 直接 new Error(array) 的 message 是 "[object Object]"，用户无从排查。
+function apiError(data, fallback) {
+  const d = data && data.detail;
+  if (Array.isArray(d)) {
+    return d.map(x => {
+      const loc = Array.isArray(x && x.loc)
+        ? x.loc.filter(p => p !== "body" && p !== undefined).join(".") : "";
+      const msg = (x && x.msg) || JSON.stringify(x);
+      return loc ? `${loc}: ${msg}` : msg;
+    }).join("；");
+  }
+  return typeof d === "string" && d ? d : (fallback || "请求失败");
+}
+
+function showToast(msg, type = "success") {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "toast " + type;
+  t.style.display = "block";
+  setTimeout(() => { t.style.display = "none"; }, 3000);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// 只把控制字符转成可读的转义序列，**不做 HTML 转义**。
+// 拼进 innerHTML 之前必须再套一层 escapeHtml：send/expect 在 ProbeIn 里只有
+// max_length、没有 pattern，直接 escCtl 进 innerHTML 就是存储型 XSS。
+function escCtl(s) {
+  return (s || "").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+}
+
+async function loadProbes() {
+  try {
+    probes = await api("/api/probes");
+    renderProbes();
+    loadPreview();
+  } catch (e) {
+    $("content").innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>加载失败：${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+async function loadPreview() {
+  try {
+    const d = await api("/api/config/preview");
+    $("previewVersion").textContent = d.version || "-";
+    $("previewHttp").textContent = d.http_toml || "";
+    $("previewNet").textContent = d.net_toml || "";
+    $("previewCard").style.display = "block";
+  } catch (e) {
+    // 预览加载失败（如无权限）时不展示卡片，不影响主功能
+    $("previewCard").style.display = "none";
+  }
+}
+
+function copyToml(kind) {
+  const pre = kind === "http" ? $("previewHttp") : $("previewNet");
+  const text = (pre.textContent || "").trim();
+  if (!text) { showToast("暂无可复制的内容", "error"); return; }
+  navigator.clipboard.writeText(text).then(() => {
+    showToast("已复制到剪贴板");
+  }).catch(() => {
+    showToast("复制失败，请手动选择复制", "error");
+  });
+}
+
+function copyAllToml() {
+  const http = ($("previewHttp").textContent || "").trim();
+  const net = ($("previewNet").textContent || "").trim();
+  if (!http && !net) { showToast("暂无可复制的内容", "error"); return; }
+  const text = (http ? "# ---- http_response ----\n" + http : "") +
+               (http && net ? "\n\n" : "") +
+               (net ? "# ---- net_response ----\n" + net : "");
+  navigator.clipboard.writeText(text).then(() => {
+    showToast("已复制到剪贴板");
+  }).catch(() => {
+    showToast("复制失败，请手动选择复制", "error");
+  });
+}
+
+function renderProbes() {
+  if (!probes.length) {
+    $("content").innerHTML = `<div class="empty-state"><div class="icon">📡</div><p>暂无端口拨测目标</p><p style="font-size:12px; margin-top:8px; color:#bbb;">到首页站点填写页为连接串资源勾选「拨测监控」即可生成</p></div>`;
+    return;
+  }
+  const rows = probes.map(p => `<tr>
+    <td class="mono">${escapeHtml(p.url)}</td>
+    <td><span class="tag tag-${p.protocol}">${(p.protocol || "tcp").toUpperCase()}</span></td>
+    <td>${escapeHtml(p.job || "")}</td>
+    <td class="mono">${escapeHtml(p.timeout || "默认")}</td>
+    <td class="mono">${escapeHtml(p.read_timeout || "默认")}</td>
+    <td class="mono" title="${escapeHtml(p.send || "")}">${escapeHtml(escCtl(p.send || "—"))}</td>
+    <td class="mono" title="${escapeHtml(p.expect || "")}">${escapeHtml(escCtl(p.expect || "—"))}</td>
+  </tr>`).join("");
+  $("content").innerHTML = `<table>
+    <thead><tr>
+      <th>目标地址</th><th>协议</th><th>名称</th><th>连接超时</th><th>读超时</th><th>发送内容</th><th>期望响应</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function openAddModal() {
+  editingId = null;
+  $("modalTitle").textContent = "添加拨测目标";
+  $("f_url").value = "";
+  $("f_protocol").value = "tcp";
+  $("f_job").value = "";
+  $("f_timeout").value = "";
+  $("f_read_timeout").value = "";
+  $("f_send").value = "";
+  $("f_expect").value = "";
+  $("editModal").classList.add("open");
+}
+
+// 标识符走 data-* 而不是内联参数：内联 handler 会被先做 HTML 实体解码再编译成 JS，
+// escapeHtml 不转单引号、escapeAttr 转出的 &#39; 会被还原，都会把单引号字符串提前闭合。
+// 见 index.html 里 escapeAttr 的注释。
+function openEditModal(el) {
+  const id = el.dataset.pid;
+  const p = probes.find(x => x.id === id);
+  if (!p) return;
+  editingId = id;
+  $("modalTitle").textContent = "编辑拨测目标";
+  $("f_url").value = p.url || "";
+  $("f_protocol").value = p.protocol || "tcp";
+  $("f_job").value = p.job || "";
+  $("f_timeout").value = p.timeout || "";
+  $("f_read_timeout").value = p.read_timeout || "";
+  $("f_send").value = escCtl(p.send || "");
+  $("f_expect").value = escCtl(p.expect || "");
+  $("editModal").classList.add("open");
+}
+
+function openDeleteModal(el) {
+  deletingId = el.dataset.pid;
+  $("delName").textContent = el.dataset.purl;
+  $("deleteModal").classList.add("open");
+}
+
+function closeModal() {
+  $("editModal").classList.remove("open");
+  $("deleteModal").classList.remove("open");
+  editingId = null;
+  deletingId = null;
+}
+
+async function saveProbe() {
+  const url = $("f_url").value.trim();
+  const job = $("f_job").value.trim();
+  if (!url) { showToast("目标地址不能为空", "error"); return; }
+  if (!job) { showToast("名称不能为空", "error"); return; }
+  if (!/^[a-zA-Z0-9._-]+:\d+$/.test(url)) { showToast("目标地址格式不对，应为 host:port", "error"); return; }
+
+  // 与后端 ProbeIn 的 pattern 一致。前端不校验就打到后端变 422，
+  // 用户只能看到 "timeout: String does not match..." 这类提示
+  const TIMEOUT_RE = /^\d+(ms|s|m)?$/;
+  const to = $("f_timeout").value.trim();
+  const rto = $("f_read_timeout").value.trim();
+  if (!TIMEOUT_RE.test(to)) {
+    showToast("连接超时格式不对：数字 + 单位（s / ms / m），纯数字按秒，如 3s / 500ms，留空用默认", "error"); return;
+  }
+  if (!TIMEOUT_RE.test(rto)) {
+    showToast("读超时格式不对：数字 + 单位（s / ms / m），如 3s / 500ms，留空用默认", "error"); return;
+  }
+
+  const data = {
+    url,
+    job,
+    protocol: $("f_protocol").value,
+    timeout: $("f_timeout").value.trim(),
+    read_timeout: $("f_read_timeout").value.trim(),
+    send: $("f_send").value,
+    expect: $("f_expect").value,
+  };
+
+  try {
+    if (editingId) {
+      await api(`/api/probes/${editingId}`, { method: "PUT", body: JSON.stringify(data) });
+      showToast("已更新");
+    } else {
+      await api("/api/probes", { method: "POST", body: JSON.stringify(data) });
+      showToast("已添加");
+    }
+    closeModal();
+    loadProbes();
+  } catch (e) {
+    showToast(e.message, "error");
+  }
+}
+
+async function confirmDelete() {
+  if (!deletingId) return;
+  try {
+    await api(`/api/probes/${deletingId}`, { method: "DELETE" });
+    showToast("已删除");
+    closeModal();
+    loadProbes();
+  } catch (e) {
+    showToast(e.message, "error");
+  }
+}
+
+// 本页为只读：端口拨测目标统一在首页站点填写页维护，此处仅展示不再提供增删改。
+
+loadProbes();
+</script>
+</body>
+</html>
