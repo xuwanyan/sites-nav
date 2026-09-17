@@ -1816,6 +1816,7 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
                 "monitor": item_data["monitor"],
                 "probe_status_codes": item_data.get("probe_status_codes", ""),
                 "probe_timeout": item_data.get("probe_timeout", ""),
+                "probe_interval": item_data.get("probe_interval", ""),
                 "probe_method": item_data.get("probe_method", ""),
                 "probe_headers": item_data.get("probe_headers", ""),
                 "probe_body": item_data.get("probe_body", ""),
