@@ -5,19 +5,22 @@ import functools
 import hashlib
 import hmac
 import io
+import ipaddress
 import json
 import os
+import re
 import secrets
 import sys
 import threading
 import time
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 import pymysql
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -156,18 +159,27 @@ class SiteIn(BaseModel):
 
     @field_validator("public_url", "private_url", "domain", mode="before")
     @classmethod
-    def _norm_url_field(cls, v):
-        """URL 字段：拒绝控制字符和引号（防止 attribute 注入），校验 http(s):// + netloc"""
+    def _norm_url_field(cls, v, info: ValidationInfo):
+        """URL 字段：拒绝控制字符和引号（防 attribute 注入），校验 scheme/netloc、
+        主机名合法性，以及 IP 归属（域名不填 IP；公网/内网各放各的）"""
         v = (v or "").strip()
         if not v:
             return v
+        if v in _PLACEHOLDERS:
+            raise ValueError(f"该字段是占位符 {v}，请留空或填真实地址")
         if any(c.isspace() or c in '"\'<>`' for c in v):
             raise ValueError("URL 含非法字符（空格/引号/尖括号）")
-        from urllib.parse import urlparse
-        u = v if v.startswith(("http://", "https://")) else "http://" + v
-        p = urlparse(u)
+        # 先走主机名/端口校验：它对括号内不合法的 IPv6 会吞掉 urlparse 的异常，
+        # 自己在这里 urlparse 就会把 http://[::1 变成 500 而不是 422
+        host_err = _url_host_error(v)
+        if host_err:
+            raise ValueError(host_err)
+        p = urlparse(_with_scheme(v))
         if p.scheme not in ("http", "https") or not p.netloc:
             raise ValueError("URL 格式不合法，应为 http(s)://host[/path]")
+        ip_err = _ip_field_error(info.field_name, v)
+        if ip_err:
+            raise ValueError(ip_err)
         return v
 
     @field_validator("probe_body", mode="before")
@@ -188,6 +200,29 @@ class SiteIn(BaseModel):
             if any(ord(c) < 32 for c in v):
                 raise ValueError("字段含非法控制字符")
         return v
+
+    @model_validator(mode="after")
+    def _check_url_fields_distinct(self):
+        """域名/公网/内网不能指向同一个地址。
+
+        同一地址填进两个字段：拨测时会产生两个不同的 job 去拨同一个目标，界面上还
+        会显示两条几乎一样的记录，用户看不出为什么重复。归一化后比较（去 scheme、
+        去默认端口，见 _norm_url），所以这些都算同一个：
+          "x.example.com" / "http://x.example.com" / "http://x.example.com/"
+          "http://x:3208"   / "https://x:3208"
+          "http://x:80"     / "http://x"
+        """
+        labels = {"domain": "域名", "public_url": "公网地址", "private_url": "内网地址"}
+        seen: dict[str, str] = {}
+        for field, label in labels.items():
+            n = _norm_url(getattr(self, field))
+            if not n:
+                continue
+            if n in seen:
+                raise ValueError(
+                    f"{label} 与 {seen[n]} 重复：{n}（域名/公网/内网不能指向同一个地址）")
+            seen[n] = label
+        return self
 
 
 FIELD_DEFAULTS = {
@@ -671,14 +706,205 @@ from toml_gen import (
 )
 
 
+_URL_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*://")
+
+
+def _with_scheme(v: str) -> str:
+    """补上缺失的 scheme。判断大小写不敏感——否则 HTTP://x 会被当成主机名 HTTP，
+    后面跟的一大段变成 path，整条地址就废了。"""
+    return v if v.lower().startswith(("http://", "https://")) else "http://" + v
+
+
+def _split_netloc(netloc: str) -> tuple[str, str]:
+    """拆出 (host, port)。port 保留原文，越界/非数字也不丢。
+
+    与前端 splitUrl 是同一套写法：查重口径一旦分叉，重复值就漏网（见测试）。
+    调用方已去掉 userinfo。"""
+    if netloc.startswith("["):
+        end = netloc.find("]")
+        host = netloc[1:end] if end >= 0 else ""
+        tail = netloc[end + 1:]
+        port = tail[1:] if tail.startswith(":") else ""
+        return host, port
+    ci = netloc.find(":")
+    return (netloc, "") if ci < 0 else (netloc[:ci], netloc[ci + 1:])
+
+
+def _split_url(v: str) -> tuple[str, str, str]:
+    """http(s) 地址 -> (host, port, 去掉 userinfo 的 netloc)。
+
+    解析失败（括号内 IPv6 不合法）返回 ("", "", "")，由调用方决定报错还是退化。"""
+    try:
+        netloc = urlparse(_with_scheme(v)).netloc
+    except ValueError:
+        return "", "", ""
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]
+    host, port = _split_netloc(netloc)
+    return host, port, netloc
+
+
+def _ip_field_error(field: str, v: str) -> str:
+    """IP 填错字段时的错误信息；相符、或不是 IP 字面量返回空串。
+
+    域名框只放域名；公网/内网各放各的 IP。放错之后两个字段各生成一个拨测 job，
+    指向同一台机器，运维看不出为什么重复。"""
+    host = _split_url(v)[0]
+    kind = _classify_ip(host)
+    if kind is None:
+        return ""
+    if field == "domain":
+        return f"域名不能填 IP 地址（{host}），请填到 公网地址 / 内网地址"
+    if field == "public_url" and kind == "internal":
+        return f"公网地址不能填内网 IP（{host}），请填到 内网地址"
+    if field == "private_url" and kind == "public":
+        return f"内网地址不能填公网 IP（{host}），请填到 公网地址"
+    return ""
+
+
 def _norm_url(v: str) -> str:
-    """归一化用于比对：补 scheme、转小写、去尾斜杠"""
+    """归一化用于比对：转小写、去 scheme、去默认端口、去尾斜杠。
+
+    去 scheme 是有意的：http://x:3208 与 https://x:3208 是同一个服务（同 host:port），
+    当成两条会生成两个 job 去拨同一个目标；默认端口同理（http://x:80 与 http://x、
+    https://x:443 与 https://x）。这只影响查重；拨测地址本身由 _pick_probe_url 用原值
+    生成，scheme 和端口在那条链路上都不丢。
+    端口保留原文（越界的 :320802 也要带着），不然会和"无端口"的写法撞成假重复。
+    绝不抛异常：历史脏数据里的 http://[1:::2]:8080 会让 urlparse 直接 ValueError，
+    而这里对每条已存记录都要跑一遍（建查重索引 / 出配置），不能让它拖垮接口。
+    """
     v = (v or "").strip().lower()
     if not v:
         return ""
-    if not v.startswith(("http://", "https://")):
+    if not _URL_SCHEME_RE.match(v):
         v = "http://" + v
-    return v.rstrip("/")
+    try:
+        p = urlparse(v)
+        path = v.split("://", 1)[1][len(p.netloc):]
+    except ValueError:
+        return v.rstrip("/")          # 括号内 IPv6 不合法：退化成字面比较
+    netloc = p.netloc
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]
+    host, port = _split_netloc(netloc)
+    if not host:
+        return v.rstrip("/")          # 解析不出主机（最常见是 IPv6 漏了方括号）
+    if (p.scheme, port) in (("http", "80"), ("https", "443")):
+        port = ""
+    return f"{host}{(':' + port if port else '')}{path}".rstrip("/")
+
+
+# 表格里表示「无此值」的占位符。这些值过去会被原样存进 URL / 连接串字段，
+# 变成永远解析不出地址的拨测目标（例如 public_url="-"），而 "N/A" 更隐蔽：
+# urlparse 在 "/" 处切开，主机名会变成单字母 "N"，校验全部通过。
+# 导入时统一归一为空；表单里手输则报明确的错，不静默吃掉。
+_PLACEHOLDERS = {
+    "-", "--", "---", "—", "–", "／", "/", "\\", "*", "×",
+    "无", "暂无", "无。", "空白", "N/A", "n/a",
+    "None", "none", "null", "NULL", "nil",
+}
+
+
+def _blank_if_placeholder(v: str) -> str:
+    s = (v or "").strip()
+    return "" if s in _PLACEHOLDERS else s
+
+
+# IP 字面量校验用 ipaddress 模块，不自己写正则：
+# 正则 \d{1,3} 会放过 999.1.1.1 / 256.0.0.1 这类每段超界的地址。
+def _is_valid_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+# 内网地址段：RFC 1918 三段 + 环回 + 链路本地；IPv6 的 ULA/环回/链路本地同样算内网。
+# 100.64.0.0/10（运营商级 NAT）没算进来——它公网不可路由，但也不算传统内网，
+# 环境里真在用的话往这个列表加一行就行。
+_INTERNAL_NETS = [
+    ipaddress.ip_network(n) for n in (
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+        "127.0.0.0/8", "169.254.0.0/16",
+        "::/128", "::1/128", "fc00::/7", "fe80::/9",
+    )
+]
+
+
+def _classify_ip(host: str) -> str | None:
+    """IP 归属：'internal' / 'public'；不是 IP 字面量返回 None。
+
+    域名一律返回 None：校验时发 DNS 请求既慢又不稳定，还会拖慢整个保存动作，
+    所以域名在公网/内网两个字段里都放行（填错的位置靠人眼判断）。
+    IPv4 映射的 IPv6（::ffff:10.0.0.1）按内嵌的 IPv4 判定；fe80::1%eth0 先剥掉 zone。
+    """
+    try:
+        ip = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return None
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    nets = [n for n in _INTERNAL_NETS if n.version == ip.version]
+    return "internal" if any(ip in n for n in nets) else "public"
+
+
+def _url_host_error(v: str) -> str:
+    """校验 URL 里的主机名和端口是否合法。合法返回空串，否则返回错误信息。
+
+    原来只校验 netloc 非空，会放过一堆根本连不通的写法，而且这些脏值进了库之后
+    会变成拨测目标，运维分不清是配置错还是网络不通：
+      "." / ".." / "a..b.com"     —— 空标签，DNS 解析必然失败
+      "-bad.com" / "bad-.com"     —— 标签不能以连字符开头或结尾
+      "中文.example.com"          —— 非 ASCII；categraf 不做 IDNA 转换
+      "999.1.1.1" / "256.0.0.1"   —— IP 每段超界（手写正则拦不住，交给 ipaddress）
+      "1.2.3.4.5" / "192.168.1"   —— 既不是合法域名也不是合法 IP
+      ":320802" / ":abc"          —— 端口越界或非数字（见 _validate_host_port 的同款口径）
+      http://::1:8080             —— IPv6 漏了方括号
+    """
+    try:
+        return _url_host_error_checked(v)
+    except ValueError:
+        # urlparse 对括号内不合法的 IPv6 直接抛异常（http://[1:::2]:8080、http://[::1）
+        # 必须接住：一条脏输入不能 500 掉整个接口
+        return f"URL 格式不合法：{v}（请检查括号内 IPv6 的写法，如 http://[::1]:8080）"
+
+
+def _url_host_error_checked(v: str) -> str:
+    # 这里直接 urlparse 而不是走 _split_url：urlparse 对括号内不合法的 IPv6 会抛异常
+    # （http://[::1、http://[1:::2]:8080），得让它冒到 _url_host_error 去换成具体提示
+    p = urlparse(_with_scheme(v))
+    netloc = p.netloc
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]  # 跳过 userinfo，只看 host:port
+    if not netloc:
+        return "URL 格式不合法，应为 http(s)://host[/path]"
+    host, port = _split_netloc(netloc)
+    if not host:
+        # netloc 非空却拆不出主机，最常见是 IPv6 漏了方括号
+        return "URL 格式不合法：IPv6 地址需加方括号，如 http://[::1]:8080"
+    if port and not _port_ok(port):
+        # 用 netloc 原文判断而不是 p.port：urlparse 对 http://a:1:2 会当成 host=a
+        # port=2 悄悄丢掉一段，拨测连的端口就和你填的不是一个
+        return f"端口不合法：{port}（应为 1-65535 之间的数字）"
+    # IP 字面量：含冒号，或不含字母（"1.2.3.4.5" / "192.168.1" / "123" 都在这里拦住）。
+    # 判定交给 ipaddress，自己写正则只会放过超界的段。
+    if ":" in host or not any(c.isalpha() for c in host):
+        if not _is_valid_ip(host):
+            return f"IP 地址不合法：{host}（请检查格式，IPv4 每段需在 0-255 范围内）"
+        return ""
+    if not host.isascii():
+        return f"域名含非 ASCII 字符：{host}（请改用 punycode 写法，如 xn-- 开头）"
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+        return f"域名含非法字符：{host}（只允许字母、数字、点和连字符）"
+    if host.startswith(".") or host.endswith("."):
+        return f"域名不能以点开头或结尾：{host}"
+    for label in host.split("."):
+        if not label:
+            return f"域名含空标签：{host}（不能有连续的点）"
+        if label.startswith("-") or label.endswith("-"):
+            return f"域名标签不能以连字符开头或结尾：{label}"
+    return ""
 
 
 def _pick_probe_url(site: dict) -> str:
@@ -734,22 +960,79 @@ def _site_to_http_target(site: dict) -> dict | None:
     return target
 
 
-def _pick_probe_addr(site: dict) -> str:
-    """从连接串提取 host:port，用于端口拨测。无法提取返回空串。
-    支持格式：host:port / scheme://[user:pass@]host:port[/path]"""
-    conn = (site.get("connection") or "").strip()
-    if not conn:
+def _has_url(rec: dict) -> bool:
+    """域名/公网/内网任一非空 → 走 HTTP 拨测；否则有 connection 时走端口拨测。
+    判断"会不会产生端口拨测目标"必须用它，不能只看 connection 是否为空"""
+    return any((rec.get(k) or "").strip() for k in ("domain", "public_url", "private_url"))
+
+
+def _port_ok(port) -> bool:
+    """端口是否合法（1-65535）。0 保留给特权进程、探测它没有意义，也不放行。"""
+    try:
+        return 1 <= int(port) <= 65535
+    except (TypeError, ValueError):
+        return False
+
+
+def _extract_host_port(value: str) -> str:
+    """从 'host:port' 或 'scheme://[user:pass@]host:port[/path]' 提取 host:port。
+    提取不到、端口非法都返回空串，**绝不抛异常**：
+    urlparse().port 在端口越界或非数字时会抛 ValueError，而这个函数会被
+    /api/config/http_response 对每条记录调用一次 —— 一条脏数据就能让整个
+    配置端点 500，所有拨测目标一起消失。"""
+    v = (value or "").strip()
+    if not v:
         return ""
     import re
-    # 已经是 host:port 格式
-    if re.match(r"^[a-zA-Z0-9._-]+:\d+$", conn):
-        return conn
-    # scheme://[user:pass@]host:port[/path]
-    if "://" in conn:
-        from urllib.parse import urlparse
-        u = urlparse(conn)
-        if u.hostname and u.port:
-            return f"{u.hostname}:{u.port}"
+    m = re.match(r"^[a-zA-Z0-9._-]+:(\d+)$", v)
+    if m:
+        return v if _port_ok(m.group(1)) else ""
+    if "://" in v:
+        try:
+            u = urlparse(v)
+            host, port = u.hostname, u.port
+        except ValueError:
+            return ""
+        if host and _port_ok(port):
+            return f"{host}:{port}"
+    return ""
+
+
+def _pick_probe_addr(site: dict) -> str:
+    """从连接串提取 host:port，用于端口拨测。无法提取返回空串。"""
+    return _extract_host_port(site.get("connection") or "")
+
+
+def _connection_port_error(connection: str) -> str:
+    """连接串里的端口越界/格式非法时返回错误信息，否则返回空串。
+    在写入时拦住，而不是等生成 TOML 时才发现问题。"""
+    import re
+    c = (connection or "").strip()
+    if not c:
+        return ""
+    # 无 scheme 的裸 host:port 形态：端口段必须是 1-65535 的数字。
+    # 原来只匹配 \d+，"10.0.0.5:abc" 两个分支都不命中 → 静默存库，而且永远产出
+    # 不了拨测目标，用户看不出"这个资源根本没在被监测"。
+    # 用 partition 而不是整串正则，"10.0.0.5:abc:1" 这种多冒号的也能抓到。
+    # 主机名部分不在合法字符集内的（自由格式连接串）不拦，避免误伤。
+    if "://" not in c and ":" in c:
+        head, _, tail = c.partition(":")
+        if re.match(r"^[a-zA-Z0-9._-]+$", head):
+            port = tail.strip()
+            if not port.isdigit():
+                return f"连接串端口 {port!r} 非法（应为 1-65535 的数字）"
+            if not _port_ok(port):
+                return f"连接串端口 {port} 非法（应为 1-65535）"
+            return ""
+    if "://" in c:
+        try:
+            port = urlparse(c).port
+        except ValueError:
+            # urlparse().port 对非数字端口和越界端口都抛 ValueError
+            return f"连接串端口非法（应为 1-65535 的数字）: {c}"
+        if port is None or _port_ok(port):
+            return ""
+        return f"连接串端口 {port} 非法（应为 1-65535）"
     return ""
 
 
@@ -961,6 +1244,34 @@ def list_probes(authorization: str | None = Header(default=None)):
     return _load_probes()
 
 
+def _site_net_addrs() -> dict[str, str]:
+    """站点派生出的端口拨测目标：host:port(小写) -> 站点名称。
+    忽略 monitor 开关：开关随时可以打开，一旦打开就会和独立目标在 net_response
+    里撞成重复键。有 URL 的站点走 HTTP 拨测，不产生端口目标。"""
+    out: dict[str, str] = {}
+    for s in _load():
+        if _has_url(s):
+            continue
+        addr = _pick_probe_addr(s)
+        if addr:
+            out.setdefault(addr.lower(), s.get("name") or "")
+    return out
+
+
+def _check_probe_url_site_conflict(url: str) -> None:
+    """独立端口拨测目标与站点派生出的目标撞车时返回 409。
+    同一个 host:port 在 net_response 里出现两次会产生重复的 [mappings] 键，
+    TOML 解析直接失败，后果是所有端口拨测一起中断（不是只少这一条）。
+    必须在 _load_mutate_probes 之外调用：那里已持有 _probes_lock，再调 _load()
+    会变成 probes→file 反向持锁，与 _all_probe_targets 的 file→probes 构成死锁。"""
+    name = _site_net_addrs().get(url.strip().lower())
+    if name is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"目标地址 {url} 已被站点「{name}」的连接串使用，两者会生成重复的端口拨测目标",
+        )
+
+
 @app.post("/api/probes")
 def create_probe(probe: ProbeIn, authorization: str | None = Header(default=None)):
     """添加端口拨测目标"""
@@ -968,6 +1279,7 @@ def create_probe(probe: ProbeIn, authorization: str | None = Header(default=None
     data = probe.model_dump()
     # 校验 host:port 格式
     _validate_host_port(data["url"])
+    _check_probe_url_site_conflict(data["url"])
     # 转义 send/expect 中的控制字符
     data["send"] = _unescape_ctl(data["send"])
     data["expect"] = _unescape_ctl(data["expect"])
@@ -994,6 +1306,7 @@ def update_probe(probe_id: str, probe: ProbeIn, authorization: str | None = Head
     _require_admin(authorization)
     data = probe.model_dump()
     _validate_host_port(data["url"])
+    _check_probe_url_site_conflict(data["url"])
     data["send"] = _unescape_ctl(data["send"])
     data["expect"] = _unescape_ctl(data["expect"])
     data["kind"] = KIND_NET
@@ -1037,13 +1350,18 @@ def delete_probe(probe_id: str, authorization: str | None = Header(default=None)
 
 
 def _validate_host_port(url: str) -> None:
-    """校验 host:port 格式"""
+    """校验 host:port 格式 + 端口范围。
+    原来只查格式不查范围：越界端口会落进 probes.json，categraf 拨测失败，
+    而界面上分不清是配置错还是网络不通。"""
     import re
-    if not re.match(r"^[a-zA-Z0-9._-]+:\d+$", url.strip()):
+    m = re.match(r"^[a-zA-Z0-9._-]+:(\d+)$", url.strip())
+    if not m:
         raise HTTPException(
             status_code=400,
             detail=f"目标地址格式非法: {url}（应为 host:port，如 10.0.0.1:22）",
         )
+    if not _port_ok(m.group(1)):
+        raise HTTPException(status_code=400, detail=f"目标地址端口 {m.group(1)} 非法（应为 1-65535）")
 
 
 def _unescape_ctl(s: str) -> str:
@@ -1062,33 +1380,72 @@ def _now() -> str:
     return _dt.datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _find_duplicate(sites: list, data: dict, exclude_id: str | None = None) -> str:
-    """多维查重：名称、域名/公网/内网地址（忽略大小写和结尾斜杠）。返回冲突描述，无冲突返回空"""
-    def _norm(v: str) -> str:
-        v = (v or "").strip().lower()
-        if not v:
-            return ""
-        if not v.startswith(("http://", "https://")) and ("." in v or ":" in v):
-            # 裸域名/IP 与带 scheme 的写法视为同一个
-            return "http://" + v.rstrip("/")
-        return v.rstrip("/")
+def _dup_index_entry(s: dict) -> dict:
+    """把一条记录预处理成查重用的比较键。
+
+    索引里的字段必须和 _find_duplicate 的判断一一对应，否则查重结果会分叉。"""
+    return {
+        "id": s["id"],
+        "name": (s.get("name") or "").strip().lower(),
+        "env": (s.get("env") or "").strip(),
+        "urls": {_norm_url(s.get(k)) for k in ("domain", "public_url", "private_url")} - {""},
+        "conn": (s.get("connection") or "").strip().lower(),
+        "addr": "" if _has_url(s) else _pick_probe_addr(s),
+        "display": s.get("name") or "",
+    }
+
+
+def _build_dup_index(sites: list) -> list:
+    return [_dup_index_entry(s) for s in sites]
+
+
+def _find_duplicate(sites: list, data: dict, exclude_id: str | None = None,
+                    probe_addrs: set | None = None, index: list | None = None) -> str:
+    """多维查重：名称、域名/公网/内网地址、连接串、端口拨测目标。
+    返回冲突描述，无冲突返回空串。
+
+    probe_addrs / index 都是可选的预计算结果，批量调用（导入）时传进来：
+      - index 不传则每次扫描都重新 norm URL、解析连接串，5000 行 x 2000 条要 55 秒
+      - probe_addrs 不传则每行读一次 probes.json
+    """
+    if index is None:
+        index = _build_dup_index(sites)
     name = data["name"].strip().lower()
     env = (data.get("env") or "").strip()
-    urls = {_norm(data.get(k)) for k in ("domain", "public_url", "private_url")} - {""}
+    urls = {_norm_url(data.get(k)) for k in ("domain", "public_url", "private_url")} - {""}
     conn = (data.get("connection") or "").strip().lower()
-    for s in sites:
-        if s["id"] == exclude_id:
+    # 端口拨测目标地址：只有"无 URL + 有 connection"的记录才会产生端口目标，
+    # 其 TOML 目标 key 是连接串解析出的 host:port，而不是连接串本身
+    has_url = _has_url(data)
+    data_addr = "" if has_url else _pick_probe_addr(data)
+    # 独立管理的端口拨测目标（data/probes.json）。
+    # 锁顺序 file→probes，与 _all_probe_targets 一致，不构成反向持锁。
+    if probe_addrs is None:
+        probe_addrs = {(p.get("url") or "").strip().lower() for p in _load_probes()} - {""}
+    # 与拨测管理页的独立目标撞车（与 sites 内容无关，必须在循环外）
+    if data_addr and data_addr.lower() in probe_addrs:
+        return f"端口拨测目标 {data_addr} 已被拨测管理页的独立目标占用"
+    for e in index:
+        if exclude_id is not None and e["id"] == exclude_id:
             continue
         # 同名同环境不允许重复；同名不同环境（分组卡：同站点跨环境）允许
-        if s["name"].strip().lower() == name and (s.get("env") or "").strip() == env:
-            return f"同名同环境的「{s['name']}」已存在（环境：{env or '未指定'}）"
-        other = {_norm(s.get(k)) for k in ("domain", "public_url", "private_url")} - {""}
-        hit = urls & other
+        if e["name"] == name and e["env"] == env:
+            return f"同名同环境的「{e['display']}」已存在（环境：{env or '未指定'}）"
+        hit = urls & e["urls"]
         if hit:
-            return f"地址 {next(iter(hit))} 已被「{s['name']}」使用"
-        other_conn = (s.get("connection") or "").strip().lower()
-        if conn and conn == other_conn:
-            return f"连接串已被「{s['name']}」使用"
+            return f"地址 {next(iter(hit))} 已被「{e['display']}」使用"
+        if conn and conn == e["conn"]:
+            return f"连接串已被「{e['display']}」使用"
+        # 端口拨测目标地址查重。同一个 host:port 在 net_response 里出现两次会产生
+        # 重复的 [mappings] 键，TOML 解析直接失败，后果是**所有**端口拨测一起中断，
+        # 而不是只少这一条。来源有两种，都要拦：
+        #   1) 两个站点连接串写法不同但解析出同一地址：172.16.16.78:6379 vs redis://172.16.16.78:6379
+        #      —— 上面的连接串字面比较拦不住
+        #   2) 站点连接串解析出的地址与拨测管理页的独立目标相同
+        # 有 URL 的记录走 HTTP 拨测，其目标 key 是完整 URL，不可能和 host:port 撞上，
+        # 所以 addr 为空（有 URL）时直接跳过。
+        if data_addr and e["addr"] and e["addr"].lower() == data_addr.lower():
+            return f"端口拨测目标 {data_addr} 已被「{e['display']}」使用（连接串写法不同但解析出同一个 host:port）"
     return ""
 
 
@@ -1198,6 +1555,11 @@ def _validate_site_payload(data: dict) -> None:
     有 URL → HTTP 拨测（校验状态码/headers 等细粒度字段）；只有 connection → 端口拨测（不需 HTTP 字段）"""
     if not any((data.get(k) or "").strip() for k in ("domain", "public_url", "private_url", "connection")):
         raise HTTPException(status_code=400, detail="域名/公网/内网/连接串至少填一个")
+    # 连接串端口越界要在写入时拦住。否则记录落库后，urlparse().port 在生成
+    # TOML 时抛 ValueError，把整个配置端点打成 500，所有拨测目标一起消失。
+    conn_err = _connection_port_error(data.get("connection") or "")
+    if conn_err:
+        raise HTTPException(status_code=400, detail=conn_err)
     if data.get("monitor"):
         has_url = any((data.get(k) or "").strip() for k in ("domain", "public_url", "private_url"))
         has_conn = bool((data.get("connection") or "").strip())
@@ -1321,15 +1683,16 @@ def _normalize_import_row(row: dict, idx: int) -> dict:
     if env not in ("生产环境", "测试环境"):
         raise ValueError(f"第{idx}行「{name}」环境标识必须是 生产环境 或 测试环境")
     monitor = _parse_bool(row.get("monitor") if "monitor" in row else row.get("拨测监控"))
+    # 占位符归一必须在「至少填一个」校验之前：一整行 URL 都是 "-" 时应当报"什么都没填"
     urls = [
-        str(row.get(k) or row.get(cn) or "").strip()
+        _blank_if_placeholder(str(row.get(k) or row.get(cn) or ""))
         for k, cn in (("domain", "域名"), ("public_url", "公网地址"), ("private_url", "内网地址"))
     ]
-    connection = str(row.get("connection") or row.get("连接串") or "").strip()
+    connection = _blank_if_placeholder(str(row.get("connection") or row.get("连接串") or ""))
     # URL 三字段和连接串至少填一个（非 URL 类资源允许只填连接串）
     if not any(urls) and not connection:
         raise ValueError(f"第{idx}行「{name}」域名/公网/内网/连接串至少填一个")
-    return {
+    result = {
         # 站点名称保持原样（不带后缀），同站点双环境靠 name 相同 + env 不同表达
         "name": name,
         "kind": kind,
@@ -1353,6 +1716,13 @@ def _normalize_import_row(row: dict, idx: int) -> dict:
         "probe_insecure_skip_verify": _parse_bool(row.get("probe_insecure_skip_verify") if "probe_insecure_skip_verify" in row else row.get("跳过证书校验")),
         "probe_tls_ca": str(row.get("probe_tls_ca") or row.get("私有CA路径") or "").strip(),
     }
+
+    # 表格占位符归一为空。不处理 name / env / monitor（有独立校验，不能变空）
+    for k in ("category", "kind", "owner", "remark", "domain", "public_url", "private_url",
+              "connection", "probe_status_codes", "probe_timeout", "probe_method",
+              "probe_headers", "probe_body", "probe_tls_ca"):
+        result[k] = _blank_if_placeholder(result[k])
+    return result
 
 
 class ImportIn(BaseModel):
@@ -1420,28 +1790,23 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
             skipped.append({"reason": str(exc)})
 
     # 原子读-改-写：_load_mutate 内做去重 + 批量 append
+    # 独立拨测目标一次性取出：循环里每行调用 _find_duplicate 时传进去，
+    # 不然 5000 行就是 5000 次读 probes.json
+    probe_addrs = {(p.get("url") or "").strip().lower() for p in _load_probes()} - {""}
     added: list = []
 
     def _mutate(sites):
-        existing_names = {(s["name"].strip().lower(), (s.get("env") or "").strip()) for s in sites}
-        existing_urls = set()
-        existing_conns = set()
-        for s in sites:
-            for k in ("domain", "public_url", "private_url"):
-                n = _norm_url(s.get(k))
-                if n:
-                    existing_urls.add(n)
-            c = (s.get("connection") or "").strip().lower()
-            if c:
-                existing_conns.add(c)
-
+        # 一次性建索引：不然每行查重都重新 norm URL + 解析连接串（5000 行 x 2000 条 = 55 秒）
+        index = _build_dup_index(sites)
         now = _now()
         for item_data in parsed:
-            name_key = (item_data["name"].strip().lower(), item_data["env"])
-            dup_urls = {_norm_url(item_data.get(k)) for k in ("domain", "public_url", "private_url")} - {""}
-            dup_conn = (item_data["connection"] or "").strip().lower()
-            if name_key in existing_names or (dup_urls & existing_urls) or (dup_conn and dup_conn in existing_conns):
-                skipped.append({"reason": f"「{item_data['name']}」已存在（名称+环境、地址或连接串重复），跳过"})
+            # 走和创建/更新完全同一条查重线。原来这里另写一套字面比较，
+            # 后果是 _find_duplicate 里的检查对导入路径全部失效：
+            #   - 撞拨测页的独立端口目标（导入能塞进重复的 host:port）
+            #   - 两个站点连接串写法不同但解析出同一 host:port（字面比拦不住）
+            dup = _find_duplicate(sites, item_data, probe_addrs=probe_addrs, index=index)
+            if dup:
+                skipped.append({"reason": f"{dup}，重复项已跳过"})
                 continue
             item = {
                 "id": secrets.token_hex(4),
@@ -1450,10 +1815,7 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
                 "updated_at": now,
             }
             sites.append(item)
-            existing_names.add(name_key)
-            existing_urls.update(dup_urls)
-            if dup_conn:
-                existing_conns.add(dup_conn)
+            index.append(_dup_index_entry(item))   # 后续行也要和新写入的记录查重
             added.append(item)
 
     _load_mutate(_mutate)

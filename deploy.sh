@@ -123,6 +123,31 @@ setup_env() {
     mkdir -p "$DATA_DIR"
 }
 
+# ── 改写 .env 里的某个键 ──
+# 密码一律走这里，**不要**用 awk -v 传值：
+#   1) `ps -ef` 能看到 awk 的命令行参数，明文密码对同机任意用户可见
+#   2) awk -v 会把反斜杠当转义处理，密码里含 \ 时 .env 会被写坏
+# 这里逐行读、只替换目标键，值始终只在 shell 变量里，不进命令行。
+# 键不存在则追加，行为与原 grep/mktemp/awk/else 分支一致。
+env_set() {
+    local key="$1" value="$2"
+    local tmp found=0 line
+    tmp=$(mktemp "$ENV_FILE.XXXXXX")
+    if [ -f "$ENV_FILE" ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+                "$key="*) printf '%s=%s\n' "$key" "$value" >> "$tmp"; found=1 ;;
+                *)        printf '%s\n' "$line" >> "$tmp" ;;
+            esac
+        done < "$ENV_FILE"
+    fi
+    if [ "$found" -eq 0 ]; then
+        printf '%s=%s\n' "$key" "$value" >> "$tmp"
+    fi
+    mv "$tmp" "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+}
+
 # ── 设置管理员初始密码 ──
 # ADMIN_PASSWORD 只用于首次启动种子 admin 账号；表已有用户后就不再被读取，
 # 所以"留空"不再是只读模式，而是首次启动时生成随机密码并在日志打印一次。
@@ -145,18 +170,7 @@ setup_password() {
         echo "ℹ️  留空，首次启动会生成随机密码"
         return
     fi
-    if grep -q '^ADMIN_PASSWORD=' "$ENV_FILE"; then
-        local tmp
-        tmp=$(mktemp "$ENV_FILE.XXXXXX")
-        awk -v p="$ADMIN_PASSWORD" -F= '
-            $1=="ADMIN_PASSWORD" { print "ADMIN_PASSWORD=" p; next }
-            { print }
-        ' "$ENV_FILE" > "$tmp"
-        mv "$tmp" "$ENV_FILE"
-    else
-        echo "ADMIN_PASSWORD=$ADMIN_PASSWORD" >> "$ENV_FILE"
-    fi
-    chmod 600 "$ENV_FILE"
+    env_set ADMIN_PASSWORD "$ADMIN_PASSWORD"
     echo "✅ 密码已写入"
 }
 
@@ -176,20 +190,7 @@ setup_mysql_password() {
     if [ -n "$existing" ]; then
         echo "✅ 已有 MySQL 密码"
     else
-        local p
-        p=$(openssl rand -hex 24)
-        if grep -q '^MYSQL_PASSWORD=' "$ENV_FILE"; then
-            local tmp
-            tmp=$(mktemp "$ENV_FILE.XXXXXX")
-            awk -v p="$p" -F= '
-                $1=="MYSQL_PASSWORD" { print "MYSQL_PASSWORD=" p; next }
-                { print }
-            ' "$ENV_FILE" > "$tmp"
-            mv "$tmp" "$ENV_FILE"
-        else
-            echo "MYSQL_PASSWORD=$p" >> "$ENV_FILE"
-        fi
-        chmod 600 "$ENV_FILE"
+        env_set MYSQL_PASSWORD "$(openssl rand -hex 24)"
         echo "✅ MySQL 密码已生成并写入 $ENV_FILE"
     fi
     # MYSQL_ROOT_PASSWORD 只在数据卷首次初始化时生效；缺失时 mysql 容器自己拒绝启动
@@ -197,61 +198,129 @@ setup_mysql_password() {
     local root_existing
     root_existing="$(env_get MYSQL_ROOT_PASSWORD)"
     if [ -z "$root_existing" ]; then
-        local r tmp
-        r=$(openssl rand -hex 24)
-        if grep -q '^MYSQL_ROOT_PASSWORD=' "$ENV_FILE"; then
-            tmp=$(mktemp "$ENV_FILE.XXXXXX")
-            awk -v p="$r" -F= '
-                $1=="MYSQL_ROOT_PASSWORD" { print "MYSQL_ROOT_PASSWORD=" p; next }
-                { print }
-            ' "$ENV_FILE" > "$tmp"
-            mv "$tmp" "$ENV_FILE"
-        else
-            echo "MYSQL_ROOT_PASSWORD=$r" >> "$ENV_FILE"
-        fi
-        chmod 600 "$ENV_FILE"
+        env_set MYSQL_ROOT_PASSWORD "$(openssl rand -hex 24)"
         echo "ℹ️  MYSQL_ROOT_PASSWORD 已生成（仅数据卷首次初始化生效）"
     fi
 }
 
 # ── 端口检查 ──
+# 占用者是本 compose 自己的容器时放行：--deploy 是"可重复执行"的，服务在跑时
+# 再执行一次应该走 up -d --force-recreate 原地重建，而不是拒绝。
+# 原来这里一律 exit 1，导致"服务已运行"时 --deploy / bootstrap.sh 的"一条命令升级"
+# 全部走不通 —— 而且 bootstrap.sh 在 exec 本脚本之前就已经把 .env 密码换成新随机值
+# 并打印，deploy 失败退出后那份"本次唯一展示"的密码对应的是还在跑的旧进程。
 check_port() {
     if command -v ss >/dev/null 2>&1; then
-        if ss -ltn 2>/dev/null | grep -q ":${PORT} "; then
-            local pid
-            pid=$(ss -ltnp 2>/dev/null | grep ":${PORT} " | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -1)
-            echo "❌ 端口 $PORT 已被占用${pid:+ (PID $pid)}"
-            echo "   先执行: ./deploy.sh --stop 或 kill $pid"
-            exit 1
-        fi
+        ss -ltn 2>/dev/null | grep -q ":${PORT} " || return 0
     elif command -v netstat >/dev/null 2>&1; then
-        if netstat -ltn 2>/dev/null | grep -q ":${PORT} "; then
-            echo "❌ 端口 $PORT 已被占用"
-            exit 1
-        fi
+        netstat -ltn 2>/dev/null | grep -q ":${PORT} " || return 0
+    else
+        return 0
     fi
+
+    if _port_is_ours; then
+        echo "   端口 $PORT 由本 compose 的容器占用，原地重建"
+        return 0
+    fi
+
+    local pid=""
+    if command -v ss >/dev/null 2>&1; then
+        pid=$(ss -ltnp 2>/dev/null | grep ":${PORT} " | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -1)
+    fi
+    echo "❌ 端口 $PORT 已被其他进程占用${pid:+ (PID $pid)}"
+    echo "   换一个端口（.env 里改 PORT）或先停掉占用方"
+    echo "   不要 kill $pid：那通常是 docker-proxy，杀了它 Docker 也不会释放端口"
+    exit 1
+}
+
+# 端口是否由本 compose project 的容器发布。
+# 不能用 ss 拿到的 PID 反查容器：占用者通常是 docker-proxy 进程，不是容器里的进程。
+_port_is_ours() {
+    local ids cid
+    ids=$(docker compose ps -q 2>/dev/null || true)
+    [ -n "$ids" ] || return 1
+    for cid in $ids; do
+        if docker inspect -f '{{json .NetworkSettings.Ports}}' "$cid" 2>/dev/null \
+            | grep -q ":${PORT}->"; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 # ── 等待健康 ──
+# /health 不通时把真实原因打出来，而不是只甩一句「超时」让人去猜。
+# 原来这步只会报超时，把两类完全不同的故障混成一件事：
+#   a) 容器根本没起来（Dockerfile 漏 COPY toml_gen.py → ModuleNotFoundError 无限重启）
+#   b) 容器起来了但 /health 非 200（比如 data/ 属主不对导致启动路径报错）
+# 排查方向完全相反，靠超时判断不出来。这里直接把状态码、容器状态和日志原样贴出来。
+_diagnose_unhealthy() {
+    echo "   ── 容器状态 ──"
+    docker compose ps --format '     {{.Name}}  {{.State}}  {{.Status}}' 2>/dev/null || true
+    echo "   ── 最近日志（最后 40 行）──"
+    docker compose logs --no-color --tail=40 2>/dev/null | sed 's/^/     /' || true
+    echo "   ── 完整日志: docker compose logs -f ──"
+}
+
 wait_healthy() {
     echo -n "   等待容器健康..."
+    local resp code body
     for i in $(seq 1 30); do
-        if curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
-            local h
-            h=$(curl -s "http://127.0.0.1:${PORT}/health")
-            if echo "$h" | grep -q "data_warning"; then
+        # \x1f 做分隔符：body 里可能含 | 或空白，用普通字符切会切错
+        resp=$(curl -s -w $'\x1f%{http_code}' "http://127.0.0.1:${PORT}/health" 2>/dev/null)
+        code=${resp##*$'\x1f'}
+        body=${resp%%$'\x1f'*}
+
+        if [ "$code" = "200" ]; then
+            if echo "$body" | grep -q "data_warning"; then
                 echo " ⚠️ 恢复"
-                echo "   警告: $(echo "$h" | sed -n 's/.*"data_warning":"\([^"]*\)".*/\1/p' | head -1)"
+                echo "   警告: $(echo "$body" | sed -n 's/.*"data_warning":"\([^"]*\)".*/\1/p' | head -1)"
             else
                 echo " ✅"
             fi
             return 0
         fi
+        # 连不上（000 / 空）说明还在启动，继续等。
+        # 服务已经响应但 /health 不是 200：不等满 30 秒，立刻报真实状态码。
+        if [ -n "$code" ] && [ "$code" != "000" ]; then
+            echo " ❌ /health 返回 $code（容器已响应，服务本身有问题）"
+            echo "     响应体: $body"
+            _diagnose_unhealthy
+            return 1
+        fi
         sleep 1
     done
-    echo " ❌ 超时"
-    echo "   查看日志: docker compose logs -f"
+    echo " ❌ 超时（30 秒内 /health 未响应，容器可能没起来或在重启循环里）"
+    _diagnose_unhealthy
     return 1
+}
+
+# ── 修正 data/ 属主 ──
+# 容器以非 root 的 app 用户跑（Dockerfile: USER app），bind mount ./data:/app/data
+# 沿用宿主机权限。按 DEPLOY.md 直接 sudo ./deploy.sh --deploy（不经 bootstrap.sh）时
+# data/ 是 root:root 0755：启动和 /health 都正常，脚本也照常打印"✅ 部署完成"，
+# 但第一次新增/编辑站点就在 app.py 的 tmp.write_text 上撞 PermissionError 变 500，
+# 看起来像业务 bug。原来只有 bootstrap.sh 做 chown，这里漏了。
+# 必须在 build 之后调：要从镜像里读 app 用户的 uid/gid。
+fix_data_perms() {
+    mkdir -p "$DATA_DIR"
+    local img uid gid
+    img=$(docker compose config --images 2>/dev/null | grep -E '^sites-nav:' | head -1 || true)
+    img="${img:-sites-nav:latest}"
+    uid=$(docker run --rm --user app --entrypoint id "$img" -u 2>/dev/null || true)
+    gid=$(docker run --rm --user app --entrypoint id "$img" -g 2>/dev/null || true)
+    if [ -z "$uid" ] || [ -z "$gid" ]; then
+        echo "   ⚠️  读不到镜像里 app 用户的 uid/gid，跳过 data/ 属主修正"
+        return 0
+    fi
+    if [ "$(stat -c '%u:%g' "$DATA_DIR" 2>/dev/null || echo '')" != "${uid}:${gid}" ]; then
+        if ! chown -R "${uid}:${gid}" "$DATA_DIR" 2>/dev/null; then
+            echo "   ⚠️  chown 失败（需要 root），请手动执行: chown -R ${uid}:${gid} $DATA_DIR"
+            echo "      症状：服务能起、/health 正常，但新增/编辑站点会 500"
+        else
+            echo "   data/ 属主已修正为 ${uid}:${gid}"
+        fi
+    fi
 }
 
 # ── 部署 ──
@@ -267,6 +336,7 @@ do_deploy() {
     # 数据在 mysql_data 命名卷里不受影响，只是多一次重启；mysql 的 env 本来就只在
     # 首次初始化生效（见 docker-compose.yml），重建对它无害。
     docker compose build
+    fix_data_perms
     docker compose up -d --force-recreate
     wait_healthy
     echo ""
@@ -283,7 +353,11 @@ do_update() {
     echo "🔄 重建并重启..."
     # 同 do_deploy：必须 --force-recreate，否则 .env 的改动不会生效。
     # 这里不 git pull —— 镜像从当前目录构建，要更新版本得先自己 git pull。
-    docker compose pull 2>/dev/null || docker compose build
+    # 直接 build，不要 pull：本项目是纯本地构建（build: .），没有远端仓库可拉。
+    # 原来的 `pull || build` 里 pull 的退出码随 Compose 版本变化 —— 有的版本对
+    # buildable 服务直接跳过并返回 0，`||` 不触发就既不构建又打印"更新完成"，
+    # 部署的还是旧镜像；远端若恰好有同名 sites-nav:latest 还会把别人的镜像拉下来。
+    docker compose build
     docker compose up -d --force-recreate
     wait_healthy
     echo "✅ 更新完成"

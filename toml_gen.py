@@ -66,9 +66,26 @@ def _net_profile_key(t: dict) -> str:
 
 # ── 生成 http_response.toml ──
 
+def _dedup_targets(targets: list[dict]) -> list[dict]:
+    """按 url 去重（大小写不敏感），保留先出现的。
+    同一个 url 出现两次时 [mappings] 会产生重复键，TOML 解析直接失败 ——
+    后果是整份配置被 categraf 拒绝、该类拨测**全部**中断，而不是只少这一条。
+    正常写入路径（_find_duplicate / create_probe）已经拦住，这里兜底历史脏数据，
+    保证生成的 TOML 永远可解析。"""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for t in targets:
+        key = (t.get("url") or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+    return out
+
+
 def generate_http_toml(targets: list[dict]) -> str:
     """将 HTTP 拨测目标渲染为 http_response.toml"""
-    targets = [t for t in targets if t.get("kind", KIND_HTTP) == KIND_HTTP]
+    targets = _dedup_targets([t for t in targets if t.get("kind", KIND_HTTP) == KIND_HTTP])
     if not targets:
         return "# (no targets configured)\n"
 
@@ -138,12 +155,16 @@ def generate_http_toml(targets: list[dict]) -> str:
             quoted = ", ".join(_toml_quote(h) for h in sorted(p["headers"]))
             lines.append(f"headers = [{quoted}]")
         if p["body"]:
-            # 多行基本字符串（可读）。但多行字符串内不能出现三引号，
-            # 且末尾反斜杠会变成行续符，所以含三引号或以 \ 结尾时回退单行 quoted string
-            if '"""' in p["body"] or p["body"].endswith("\\"):
-                lines.append(f'body = {_toml_quote(p["body"])}')
-            else:
-                lines.append(f'body = """\n{p["body"]}\n"""')
+            # body 一律用单行 quoted string，不用多行基本字符串（"""）。
+            # 多行写法有两处硬伤，都实测确认过：
+            #   1) TOML 只裁掉紧跟开头的换行，结尾那个换行保留 —— 每条 body 都被静默加尾随 \n，
+            #      对做 body 签名/校验和的接口是坏数据。
+            #   2) 多行基本字符串仍会处理转义序列：body 里的字面 \n 会变成真实换行（请求体被改写）；
+            #      出现 \U \u 等非法转义时整份 TOML 解析失败（Invalid hex value），
+            #      后果不是"这一条目标挂"，而是 categraf 拒绝整份 http_response，所有 HTTP 拨测一起中断。
+            # probe_body 只过滤控制字符、反斜杠合法，所以上面两种情况从页面填写即可触发。
+            # 代价是长 body 在 TOML 里不好看，换来的是配置永远可解析。别改回多行。
+            lines.append(f'body = {_toml_quote(p["body"])}')
         # follow_redirects：显式设置才落盘，留空用 categraf 默认值
         if p["follow_redirects"] is not None:
             lines.append(f'follow_redirects = {"true" if p["follow_redirects"] else "false"}')
@@ -162,7 +183,7 @@ def generate_http_toml(targets: list[dict]) -> str:
 
 def generate_net_toml(targets: list[dict]) -> str:
     """将端口拨测目标渲染为 net_response.toml"""
-    targets = [t for t in targets if t.get("kind") == KIND_NET]
+    targets = _dedup_targets([t for t in targets if t.get("kind") == KIND_NET])
     if not targets:
         return "# (no targets configured)\n"
 
@@ -232,13 +253,15 @@ def generate_net_toml(targets: list[dict]) -> str:
 # ── TOML 字符串转义 ──
 
 def _toml_quote(s: str) -> str:
-    """TOML 双引号字符串转义（对齐 Go fmt.Sprintf("%q", s)）。
-    转义所有不可打印字符（< 0x20）为 \\uXXXX，补齐 \\b \\f。"""
+    """TOML 双引号字符串转义。
+    TOML 要求 U+0000–U+0008、U+000A–U+001F、U+007F 全部转义，少一个就是
+    Illegal character，整份 net_response 解析失败、所有端口拨测一起中断。
+    注意 U+007F 不在 < 0x20 里，Go 的 %q 也只转 < 0x20，所以这个坑两侧都有。"""
     s = s.replace("\\", "\\\\").replace('"', '\\"')
     s = s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
     s = s.replace("\b", "\\b").replace("\f", "\\f")
-    # 其余控制字符（< 0x20，已处理 \n\r\t\b\f 的剩余）统一转义
-    s = "".join(c if ord(c) >= 32 else f"\\u{ord(c):04x}" for c in s)
+    # 其余控制字符（< 0x20 里已处理 \n\r\t\b\f 的剩余）+ 0x7F 统一转义
+    s = "".join(c if (32 <= ord(c) < 127) else f"\\u{ord(c):04x}" for c in s)
     return f'"{s}"'
 
 

@@ -114,7 +114,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const token = sessionStorage.getItem("nav_token") || "";
+const token = localStorage.getItem("nav_token") || "";
 
 function showToast(msg, type = "success") {
   const t = $("toast");
@@ -122,6 +122,22 @@ function showToast(msg, type = "success") {
   t.className = `toast ${type} show`;
   clearTimeout(t._timer);
   t._timer = setTimeout(() => t.classList.remove("show"), 2500);
+}
+
+// FastAPI 的错误 detail 有两种形状：HTTPException 是字符串，
+// Pydantic 校验失败（422，如密码超过 256、用户名含空格）是数组。
+// 直接 new Error(array) 的 message 是 "[object Object]"，登录页看不到错在哪。
+function apiError(data, fallback) {
+  const d = data && data.detail;
+  if (Array.isArray(d)) {
+    return d.map(x => {
+      const loc = Array.isArray(x && x.loc)
+        ? x.loc.filter(p => p !== "body" && p !== undefined).join(".") : "";
+      const msg = (x && x.msg) || JSON.stringify(x);
+      return loc ? `${loc}: ${msg}` : msg;
+    }).join("；");
+  }
+  return typeof d === "string" && d ? d : (fallback || "请求失败");
 }
 
 if (token) {
@@ -143,9 +159,9 @@ async function doLogin() {
       body: JSON.stringify({ username, password }),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || "登录失败");
-    sessionStorage.setItem("nav_token", data.token);
-    sessionStorage.setItem("nav_role", data.role || "user");
+    if (!res.ok) throw new Error(apiError(data, "登录失败"));
+    localStorage.setItem("nav_token", data.token);
+    localStorage.setItem("nav_role", data.role || "user");
     showToast("登录成功，正在进入首页…", "success");
     setTimeout(() => { location.href = "/"; }, 600);
   } catch (e) {
@@ -154,8 +170,8 @@ async function doLogin() {
 }
 
 function doLogout() {
-  sessionStorage.removeItem("nav_token");
-  sessionStorage.removeItem("nav_role");
+  localStorage.removeItem("nav_token");
+  localStorage.removeItem("nav_role");
   showToast("已退出登录", "success");
   setTimeout(() => { location.href = "/"; }, 600);
 }

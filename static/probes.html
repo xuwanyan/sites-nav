@@ -175,7 +175,7 @@
     <div class="form-row">
       <div class="form-group">
         <label>目标地址 *</label>
-        <input type="text" id="f_url" placeholder="如 10.0.0.1:22">
+        <input type="text" id="f_url" maxlength="200" placeholder="如 10.0.0.1:22">
         <div class="hint">host:port 格式</div>
       </div>
       <div class="form-group" style="max-width:120px;">
@@ -188,7 +188,7 @@
     </div>
     <div class="form-group">
       <label>名称 (job) *</label>
-      <input type="text" id="f_job" placeholder="如 跳板机SSH">
+      <input type="text" id="f_job" maxlength="100" placeholder="如 跳板机SSH">
       <div class="hint">用于 [mappings] 中的 job 标签</div>
     </div>
     <div class="form-row">
@@ -203,12 +203,12 @@
     </div>
     <div class="form-group">
       <label>发送内容 (send)</label>
-      <input type="text" id="f_send" placeholder="如 \r\n，留空不发送">
+      <input type="text" id="f_send" maxlength="500" placeholder="如 \r\n，留空不发送">
       <div class="hint">支持 \r \n \t 转义</div>
     </div>
     <div class="form-group">
       <label>期望响应包含 (expect)</label>
-      <input type="text" id="f_expect" placeholder="不填则仅检测连通">
+      <input type="text" id="f_expect" maxlength="500" placeholder="不填则仅检测连通">
     </div>
     <div class="modal-actions">
       <button class="btn btn-default" onclick="closeModal()">取消</button>
@@ -233,8 +233,8 @@
 <div class="toast" id="toast"></div>
 
 <script>
-let token = sessionStorage.getItem("nav_token") || "";
-let role = sessionStorage.getItem("nav_role") || "user";
+let token = localStorage.getItem("nav_token") || "";
+let role = localStorage.getItem("nav_role") || "user";
 let probes = [];
 let editingId = null;
 let deletingId = null;
@@ -249,15 +249,31 @@ async function api(url, options = {}) {
   const res = await fetch(url, { ...options, headers });
   if (res.status === 401) {
     token = ""; role = "user";
-    sessionStorage.removeItem("nav_token");
-    sessionStorage.removeItem("nav_role");
+    localStorage.removeItem("nav_token");
+    localStorage.removeItem("nav_role");
     showToast("登录已过期，请重新登录", "error");
     setTimeout(() => { location.href = "/admin"; }, 800);
     throw new Error("未授权");
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || "请求失败");
+  if (!res.ok) throw new Error(apiError(data, "请求失败"));
   return data;
+}
+
+// FastAPI 的错误 detail 有两种形状：HTTPException 是字符串，
+// Pydantic 校验失败（422，字段超长/格式不合法）是数组。
+// 直接 new Error(array) 的 message 是 "[object Object]"，用户无从排查。
+function apiError(data, fallback) {
+  const d = data && data.detail;
+  if (Array.isArray(d)) {
+    return d.map(x => {
+      const loc = Array.isArray(x && x.loc)
+        ? x.loc.filter(p => p !== "body" && p !== undefined).join(".") : "";
+      const msg = (x && x.msg) || JSON.stringify(x);
+      return loc ? `${loc}: ${msg}` : msg;
+    }).join("；");
+  }
+  return typeof d === "string" && d ? d : (fallback || "请求失败");
 }
 
 function showToast(msg, type = "success") {
@@ -272,6 +288,9 @@ function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// 只把控制字符转成可读的转义序列，**不做 HTML 转义**。
+// 拼进 innerHTML 之前必须再套一层 escapeHtml：send/expect 在 ProbeIn 里只有
+// max_length、没有 pattern，直接 escCtl 进 innerHTML 就是存储型 XSS。
 function escCtl(s) {
   return (s || "").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
 }
@@ -335,11 +354,11 @@ function renderProbes() {
     <td>${escapeHtml(p.job || "")}</td>
     <td class="mono">${escapeHtml(p.timeout || "默认")}</td>
     <td class="mono">${escapeHtml(p.read_timeout || "默认")}</td>
-    <td class="mono" title="${escapeHtml(p.send || "")}">${escCtl(p.send || "—")}</td>
-    <td class="mono" title="${escapeHtml(p.expect || "")}">${escCtl(p.expect || "—")}</td>
+    <td class="mono" title="${escapeHtml(p.send || "")}">${escapeHtml(escCtl(p.send || "—"))}</td>
+    <td class="mono" title="${escapeHtml(p.expect || "")}">${escapeHtml(escCtl(p.expect || "—"))}</td>
     <td>
-      <button class="btn btn-default btn-sm" onclick="openEditModal('${p.id}')">✏️ 编辑</button>
-      <button class="btn btn-danger btn-sm" onclick="openDeleteModal('${p.id}', '${escapeHtml(p.url)}')">🗑️ 删除</button>
+      <button class="btn btn-default btn-sm" data-pid="${escapeHtml(p.id)}" onclick="openEditModal(this)">✏️ 编辑</button>
+      <button class="btn btn-danger btn-sm" data-pid="${escapeHtml(p.id)}" data-purl="${escapeHtml(p.url)}" onclick="openDeleteModal(this)">🗑️ 删除</button>
     </td>
   </tr>`).join("");
   $("content").innerHTML = `<table>
@@ -363,7 +382,11 @@ function openAddModal() {
   $("editModal").classList.add("open");
 }
 
-function openEditModal(id) {
+// 标识符走 data-* 而不是内联参数：内联 handler 会被先做 HTML 实体解码再编译成 JS，
+// escapeHtml 不转单引号、escapeAttr 转出的 &#39; 会被还原，都会把单引号字符串提前闭合。
+// 见 index.html 里 escapeAttr 的注释。
+function openEditModal(el) {
+  const id = el.dataset.pid;
   const p = probes.find(x => x.id === id);
   if (!p) return;
   editingId = id;
@@ -378,9 +401,9 @@ function openEditModal(id) {
   $("editModal").classList.add("open");
 }
 
-function openDeleteModal(id, url) {
-  deletingId = id;
-  $("delName").textContent = url;
+function openDeleteModal(el) {
+  deletingId = el.dataset.pid;
+  $("delName").textContent = el.dataset.purl;
   $("deleteModal").classList.add("open");
 }
 
@@ -397,6 +420,18 @@ async function saveProbe() {
   if (!url) { showToast("目标地址不能为空", "error"); return; }
   if (!job) { showToast("名称不能为空", "error"); return; }
   if (!/^[a-zA-Z0-9._-]+:\d+$/.test(url)) { showToast("目标地址格式不对，应为 host:port", "error"); return; }
+
+  // 与后端 ProbeIn 的 pattern 一致。前端不校验就打到后端变 422，
+  // 用户只能看到 "timeout: String does not match..." 这类提示
+  const TIMEOUT_RE = /^\d+(ms|s|m)?$/;
+  const to = $("f_timeout").value.trim();
+  const rto = $("f_read_timeout").value.trim();
+  if (!TIMEOUT_RE.test(to)) {
+    showToast("连接超时格式不对：数字 + 单位（s / ms / m），纯数字按秒，如 3s / 500ms，留空用默认", "error"); return;
+  }
+  if (!TIMEOUT_RE.test(rto)) {
+    showToast("读超时格式不对：数字 + 单位（s / ms / m），如 3s / 500ms，留空用默认", "error"); return;
+  }
 
   const data = {
     url,

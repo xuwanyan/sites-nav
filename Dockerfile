@@ -7,8 +7,11 @@ COPY requirements.txt .
 # -i 指定阿里云 PyPI 镜像：国内构建环境直连 pypi.org 常超时
 RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
 
-# 拷贝应用代码与静态资源
+# 拷贝应用代码与静态资源。
+# app.py 模块级 `from toml_gen import ...`，漏这条 COPY 会导致容器启动即
+# ModuleNotFoundError、无限重启，而 wait_healthy 只会报"超时"，排查方向完全错。
 COPY app.py ./
+COPY toml_gen.py ./
 COPY static/ ./static/
 
 # 数据目录（运行时由 docker-compose 的 volume 覆盖）
