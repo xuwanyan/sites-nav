@@ -147,14 +147,29 @@ class SiteIn(BaseModel):
     probe_follow_redirects: bool | None = None  # None=用 categraf 默认；显式 true/false 才落盘
     probe_insecure_skip_verify: bool = False  # 跳过证书校验（与 tls_ca 互斥，跳过优先）
     probe_tls_ca: str = Field(default="", max_length=500)  # 私有 CA 证书路径（categraf 服务器本地路径）
+    # 端口拨测参数：只在「无 URL + 有 connection」时生效（有 URL 走 HTTP 拨测，这几个字段被忽略）
+    probe_protocol: str = Field(default="tcp", pattern=r"^(tcp|udp)$")  # 协议
+    probe_read_timeout: str = Field(default="", pattern=r"^(\d+(ms|s|m))?$")  # 只有 expect 时才有意义
+    probe_send: str = Field(default="", max_length=500)  # 发送内容，\r \n \t 用转义写法
+    probe_expect: str = Field(default="", max_length=500)  # 期望响应包含
 
-    @field_validator("probe_timeout", mode="before")
+    @field_validator("probe_timeout", "probe_read_timeout", mode="before")
     @classmethod
     def _norm_probe_timeout(cls, v):
         """超时时长纯数字自动按秒补单位（3 -> 3s），防止漏写 s"""
         v = v.strip() if isinstance(v, str) else v
         if isinstance(v, str) and v.isdigit():
             return f"{v}s"
+        return v
+
+    @field_validator("probe_send", "probe_expect", mode="before")
+    @classmethod
+    def _reject_send_expect_control_chars(cls, v):
+        """拒绝真实控制字符：send/expect 里要表达 \r \n \t 用字面转义写法，
+        落库时由 _validate_site_payload 还原（与旧的 /api/probes 同一套口径）"""
+        v = v.strip() if isinstance(v, str) else v
+        if isinstance(v, str) and any(ord(c) < 32 for c in v):
+            raise ValueError("发送/期望内容含非法控制字符，请写 \\r \\n \\t")
         return v
 
     @field_validator("public_url", "private_url", "domain", mode="before")
@@ -245,6 +260,10 @@ FIELD_DEFAULTS = {
     "probe_follow_redirects": None,
     "probe_insecure_skip_verify": False,
     "probe_tls_ca": "",
+    "probe_protocol": "tcp",
+    "probe_read_timeout": "",
+    "probe_send": "",
+    "probe_expect": "",
     "created_at": "",
     "updated_at": "",
 }
@@ -1038,7 +1057,8 @@ def _connection_port_error(connection: str) -> str:
 
 def _site_to_net_target(site: dict) -> dict | None:
     """站点 → 端口拨测目标（monitor=true 且无 URL 但有 connection 才生成）。
-    从连接串自动提取 host:port，协议默认 TCP，共享 probe_timeout。"""
+    从连接串提取 host:port；协议/超时/send/expect 走站点自己的拨测字段，
+    所以端口拨测的配置全部在站点表单里完成，不再需要独立的端口拨测管理页。"""
     if not site.get("monitor"):
         return None
     # 有 URL 的站点走 HTTP 拨测，不在这里重复
@@ -1047,16 +1067,22 @@ def _site_to_net_target(site: dict) -> dict | None:
     addr = _pick_probe_addr(site)
     if not addr:
         return None
-    timeout = (site.get("probe_timeout") or "").strip()
+    protocol = (site.get("probe_protocol") or "").strip().lower()
+    if protocol not in ("tcp", "udp"):
+        protocol = "tcp"   # 历史脏数据兜底
     target = {
         "id": site["id"],
         "kind": KIND_NET,
         "url": addr,
         "job": _probe_job(site),
-        "protocol": "tcp",
+        "protocol": protocol,
     }
-    if timeout:
-        target["timeout"] = timeout
+    # 字段名不同（站点带 probe_ 前缀），非空才写，让 TOML 走 categraf 默认值
+    for src, dst in (("probe_timeout", "timeout"), ("probe_read_timeout", "read_timeout"),
+                     ("probe_send", "send"), ("probe_expect", "expect")):
+        val = (site.get(src) or "").strip()
+        if val:
+            target[dst] = val
     return target
 
 
@@ -1576,6 +1602,12 @@ def _validate_site_payload(data: dict) -> None:
                 raise HTTPException(status_code=400, detail=str(e))
     # TLS 字段归一化：跳过校验与私有 CA 互斥（跳过优先，清空 CA），无论是否勾选拨测都统一处理
     _normalize_probe_tls(data)
+
+    # 还原 send/expect 里 \r \n \t 的字面转义为真实控制字符（对齐 /api/probes）。
+    # 输入校验 _reject_send_expect_control_chars 已拒收真控制字符，这里只把用户按转义写法
+    # 输入的字面文本还原，这样 categraf 收到的才是真正的回车/换行/制表。
+    data["probe_send"] = _unescape_ctl(data.get("probe_send") or "")
+    data["probe_expect"] = _unescape_ctl(data.get("probe_expect") or "")
 
 
 @app.put("/api/sites/{site_id}")

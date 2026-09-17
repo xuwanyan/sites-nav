@@ -256,12 +256,15 @@ def _toml_quote(s: str) -> str:
     """TOML 双引号字符串转义。
     TOML 要求 U+0000–U+0008、U+000A–U+001F、U+007F 全部转义，少一个就是
     Illegal character，整份 net_response 解析失败、所有端口拨测一起中断。
-    注意 U+007F 不在 < 0x20 里，Go 的 %q 也只转 < 0x20，所以这个坑两侧都有。"""
+    注意 U+007F 不在 < 0x20 里，Go 的 %q 也只转 < 0x20，所以这个坑两侧都有。
+    非 ASCII 可打印字符（中文名、环境标识等）保持原样输出（对齐原 categraf-http-admin
+    用 %q 的行为），仅对 TOML 要求转义的控制字符做转义 —— 否则中文会变成 \\u4e2d\\u6587 一串
+    不可读的转义，预览完全没法看。"""
     s = s.replace("\\", "\\\\").replace('"', '\\"')
     s = s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
     s = s.replace("\b", "\\b").replace("\f", "\\f")
-    # 其余控制字符（< 0x20 里已处理 \n\r\t\b\f 的剩余）+ 0x7F 统一转义
-    s = "".join(c if (32 <= ord(c) < 127) else f"\\u{ord(c):04x}" for c in s)
+    # 统一判可打印：控制字符与 0x7F 转义；可打印非 ASCII（中文等）保留原样
+    s = "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in s)
     return f'"{s}"'
 
 
