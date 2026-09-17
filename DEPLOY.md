@@ -222,6 +222,50 @@ git fetch origin main && git checkout -B main origin/main
 docker compose up -d --build
 ```
 
+## 多版本分区部署
+
+`main`（新版）、`develop-20260918`（开发线）、`release/v1-对接categraf`（旧版，对接 categraf-http-admin）可以**同时部署在一台服务器上、互不干扰**。
+
+原理：镜像从**当前目录**构建，compose 项目名 = 目录名 → 每个目录 = 独立容器 + 独立 `mysql_data` 卷 + 独立数据库；`sites-nav` 服务未设固定 `container_name`（见 docker-compose.yml 注释，允许同名镜像多实例并存）。唯一要错开的是各目录 `.env` 的 `PORT`（宿主机端口）。
+
+```bash
+# 一键部署全部 3 个版本（main / dev / legacy）
+curl -fsSL https://raw.githubusercontent.com/xuwanyan/sites-nav/main/scripts/deploy_versions.sh -o /tmp/deploy_versions.sh
+sudo bash /tmp/deploy_versions.sh
+
+# 只部署其中某个
+sudo bash /tmp/deploy_versions.sh main      # 新版
+sudo bash /tmp/deploy_versions.sh dev       # 开发线
+sudo bash /tmp/deploy_versions.sh legacy    # 旧版（对接 categraf-http-admin）
+```
+
+对应位置：
+
+| 版本 | 分支 | 目录 | 端口 |
+|---|---|---|---|
+| 新版 | `main` | `/opt/sites-nav` | 8000 |
+| 开发线 | `develop-20260918` | `/opt/sites-nav-dev` | 8001 |
+| 旧版 | `release/v1-对接categraf` | `/opt/sites-nav-legacy` | 8002 |
+
+手工等价操作（每版本）：
+
+```bash
+sudo bash /tmp/bootstrap.sh /opt/sites-nav-legacy "release/v1-对接categraf"
+# 改 /opt/sites-nav-legacy/.env：PORT=8002（各目录不同）
+cd /opt/sites-nav-legacy && sudo ./deploy.sh --deploy
+```
+
+单独升级某个版本（其它目录不受影响）：
+
+```bash
+sudo bash /tmp/bootstrap.sh --deploy /opt/sites-nav-legacy "release/v1-对接categraf"
+```
+
+**要点**
+- 各版本账号/数据默认**不互通**（独立目录 + 独立库）。想共用站点数据与账号：让它们指向同一个 MySQL 实例（外部 `MYSQL_HOST`），但 `MYSQL_DATABASE` 各用不同库名。
+- 镜像统一叫 `sites-nav:latest`。`deploy.sh` 每次部署都会在自己的目录重新 `build`，所以实际镜像来自各自目录的构建，标签冲突无实际影响。**勿**在容器运行时手敲 `docker compose up -d --force-recreate`（不带 build），否则可能误用被其它目录覆盖的 latest 镜像——统一走 `./deploy.sh --deploy`。
+- 这里说的是"多个不同版本并存"；**同一版本**仍遵守 [单实例红线](#单实例红线)：不要对单个版本起 N 个副本。
+
 ## 备份
 
 数据分两处：站点数据是单文件，用户与权限在 MySQL。

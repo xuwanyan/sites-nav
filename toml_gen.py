@@ -17,6 +17,12 @@ KIND_NET = "net"
 # 期望状态码格式：三位数字，多值用 | 分隔
 _STATUS_CODES_RE = re.compile(r"^\d{3}(\|\d{3})*$")
 
+# HTTP 单条 [[instances]] 的 target 上限：categraf 对同 instance 内多个 targets
+# 串行探测，目标过多时一轮总耗时 = Σ各目标耗时，可能超过 interval 导致实际频率下降
+# （net_response 是并行探测，不受此影响，不拆）。超过上限自动拆成多条 instance，
+# 每条各自并行、独立周期。夜莺按 labels（target/job）区分，拆分不影响展示与告警。
+_HTTP_INSTANCE_TARGET_LIMIT = 10
+
 
 def validate_status_codes(s: str) -> str:
     """校验期望状态码格式，非法返回错误信息，合法返回空串"""
@@ -32,6 +38,7 @@ def validate_status_codes(s: str) -> str:
 def _http_profile_key(t: dict) -> str:
     """HTTP 拨测配置画像 key：只有完全相同的配置才能合并到同一个 [[instances]]"""
     profile = {
+        "interval": t.get("interval", ""),
         "method": t.get("method", "GET"),
         "expected_status_codes": t.get("expected_status_codes", "200"),
         "response_timeout": t.get("response_timeout", ""),
@@ -55,6 +62,7 @@ def _header_key(headers: list) -> str:
 
 def _net_profile_key(t: dict) -> str:
     profile = {
+        "interval": t.get("interval", ""),
         "protocol": t.get("protocol", "tcp"),
         "timeout": t.get("timeout", ""),
         "read_timeout": t.get("read_timeout", ""),
@@ -98,6 +106,7 @@ def generate_http_toml(targets: list[dict]) -> str:
             keys.append(k)
             groups[k] = {
                 "profile": {
+                    "interval": t.get("interval", ""),
                     "method": t.get("method", "GET"),
                     "expected_status_codes": t.get("expected_status_codes", "200"),
                     "response_timeout": t.get("response_timeout", ""),
@@ -127,56 +136,71 @@ def generate_http_toml(targets: list[dict]) -> str:
         lines.append("")
 
     # [[instances]] 段
-    for gi, k in enumerate(keys):
+    # HTTP 同 instance 串行探测：同一 profile 的 targets 超过上限时拆成多条 instance，
+    # 各自并行、独立周期（net_response 并行探测，无需拆）。拆分只影响探测执行，
+    # [mappings] 与夜莺侧的 labels（target/job）都不变。
+    first_instance = True
+    for k in keys:
         g = groups[k]
         urls = sorted(g["urls"])
         p = g["profile"]
 
-        if gi > 0:
-            lines.append("")
-
-        lines.append("[[instances]]")
-        lines.append("targets = [")
-        for i, u in enumerate(urls):
-            comma = "," if i < len(urls) - 1 else ""
-            lines.append(f"    {_toml_quote(u)}{comma}")
-        lines.append("]")
-
-        # 超时：为空则不写，categraf 用默认值
-        if p["response_timeout"]:
-            lines.append(f'response_timeout = {_toml_quote(p["response_timeout"])}')
-        # method：GET 是 categraf 默认值，省略
-        if p["method"] and p["method"] != "GET":
-            lines.append(f'method = {_toml_quote(p["method"])}')
-        # 状态码必须显式落盘：categraf 不配置时不做任何状态码检查
-        if p["expected_status_codes"]:
-            lines.append(f'expect_response_status_codes = {_toml_quote(p["expected_status_codes"])}')
-        if p["headers"]:
-            quoted = ", ".join(_toml_quote(h) for h in sorted(p["headers"]))
-            lines.append(f"headers = [{quoted}]")
-        if p["body"]:
-            # body 一律用单行 quoted string，不用多行基本字符串（"""）。
-            # 多行写法有两处硬伤，都实测确认过：
-            #   1) TOML 只裁掉紧跟开头的换行，结尾那个换行保留 —— 每条 body 都被静默加尾随 \n，
-            #      对做 body 签名/校验和的接口是坏数据。
-            #   2) 多行基本字符串仍会处理转义序列：body 里的字面 \n 会变成真实换行（请求体被改写）；
-            #      出现 \U \u 等非法转义时整份 TOML 解析失败（Invalid hex value），
-            #      后果不是"这一条目标挂"，而是 categraf 拒绝整份 http_response，所有 HTTP 拨测一起中断。
-            # probe_body 只过滤控制字符、反斜杠合法，所以上面两种情况从页面填写即可触发。
-            # 代价是长 body 在 TOML 里不好看，换来的是配置永远可解析。别改回多行。
-            lines.append(f'body = {_toml_quote(p["body"])}')
-        # follow_redirects：显式设置才落盘，留空用 categraf 默认值
-        if p["follow_redirects"] is not None:
-            lines.append(f'follow_redirects = {"true" if p["follow_redirects"] else "false"}')
-        if p["use_tls"] or p["insecure_skip_verify"]:
-            # insecure_skip_verify 必须配合 use_tls = true 才生效
-            lines.append("use_tls = true")
-            if p["tls_ca"]:
-                lines.append(f'tls_ca = {_toml_quote(p["tls_ca"])}')
-            if p["insecure_skip_verify"]:
-                lines.append("insecure_skip_verify = true")
+        for start in range(0, len(urls), _HTTP_INSTANCE_TARGET_LIMIT):
+            chunk = urls[start:start + _HTTP_INSTANCE_TARGET_LIMIT]
+            if not first_instance:
+                lines.append("")
+            first_instance = False
+            _emit_http_instance(lines, chunk, p)
 
     return "\n".join(lines) + "\n"
+
+
+def _emit_http_instance(lines: list[str], urls: list[str], p: dict) -> None:
+    """写一条 http_response [[instances]]（targets 列表 + 该 profile 的全部字段）"""
+    lines.append("[[instances]]")
+    lines.append("targets = [")
+    for i, u in enumerate(urls):
+        comma = "," if i < len(urls) - 1 else ""
+        lines.append(f"    {_toml_quote(u)}{comma}")
+    lines.append("]")
+
+    # interval：留空则用 categraf 全局默认（不写该行）
+    if p["interval"]:
+        lines.append(f'interval = {_toml_quote(p["interval"])}')
+
+    # 超时：为空则不写，categraf 用默认值
+    if p["response_timeout"]:
+        lines.append(f'response_timeout = {_toml_quote(p["response_timeout"])}')
+    # method：GET 是 categraf 默认值，省略
+    if p["method"] and p["method"] != "GET":
+        lines.append(f'method = {_toml_quote(p["method"])}')
+    # 状态码必须显式落盘：categraf 不配置时不做任何状态码检查
+    if p["expected_status_codes"]:
+        lines.append(f'expect_response_status_codes = {_toml_quote(p["expected_status_codes"])}')
+    if p["headers"]:
+        quoted = ", ".join(_toml_quote(h) for h in sorted(p["headers"]))
+        lines.append(f"headers = [{quoted}]")
+    if p["body"]:
+        # body 一律用单行 quoted string，不用多行基本字符串（"""）。
+        # 多行写法有两处硬伤，都实测确认过：
+        #   1) TOML 只裁掉紧跟开头的换行，结尾那个换行保留 —— 每条 body 都被静默加尾随 \n，
+        #      对做 body 签名/校验和的接口是坏数据。
+        #   2) 多行基本字符串仍会处理转义序列：body 里的字面 \n 会变成真实换行（请求体被改写）；
+        #      出现 \U \u 等非法转义时整份 TOML 解析失败（Invalid hex value），
+        #      后果不是"这一条目标挂"，而是 categraf 拒绝整份 http_response，所有 HTTP 拨测一起中断。
+        # probe_body 只过滤控制字符、反斜杠合法，所以上面两种情况从页面填写即可触发。
+        # 代价是长 body 在 TOML 里不好看，换来的是配置永远可解析。别改回多行。
+        lines.append(f'body = {_toml_quote(p["body"])}')
+    # follow_redirects：显式设置才落盘，留空用 categraf 默认值
+    if p["follow_redirects"] is not None:
+        lines.append(f'follow_redirects = {"true" if p["follow_redirects"] else "false"}')
+    if p["use_tls"] or p["insecure_skip_verify"]:
+        # insecure_skip_verify 必须配合 use_tls = true 才生效
+        lines.append("use_tls = true")
+        if p["tls_ca"]:
+            lines.append(f'tls_ca = {_toml_quote(p["tls_ca"])}')
+        if p["insecure_skip_verify"]:
+            lines.append("insecure_skip_verify = true")
 
 
 # ── 生成 net_response.toml ──
@@ -195,6 +219,7 @@ def generate_net_toml(targets: list[dict]) -> str:
             keys.append(k)
             groups[k] = {
                 "profile": {
+                    "interval": t.get("interval", ""),
                     "protocol": t.get("protocol", "tcp"),
                     "timeout": t.get("timeout", ""),
                     "read_timeout": t.get("read_timeout", ""),
@@ -234,6 +259,10 @@ def generate_net_toml(targets: list[dict]) -> str:
             comma = "," if i < len(addrs) - 1 else ""
             lines.append(f"    {_toml_quote(a)}{comma}")
         lines.append("]")
+
+        # interval：留空则用 categraf 全局默认（不写该行）
+        if p["interval"]:
+            lines.append(f'interval = {_toml_quote(p["interval"])}')
 
         # tcp 为 categraf 默认值，仅 udp 时显式落盘
         if p["protocol"] == "udp":

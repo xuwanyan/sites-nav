@@ -616,6 +616,10 @@
           <label>超时时长</label>
           <input type="text" id="f_probe_timeout" placeholder="如 3s / 500ms，纯数字按秒，留空不设置">
         </div>
+        <div class="form-group" style="max-width:150px;">
+          <label>探测间隔</label>
+          <input type="text" id="f_probe_interval" placeholder="如 30s / 500ms / 1m，留空用全局默认">
+        </div>
       </div>
       <!-- 端口拨测高级：发送与响应匹配（对齐原 categraf-http-admin） -->
       <div id="probeNetAdvBlock" style="display:none; margin-top:4px;">
@@ -792,6 +796,10 @@
             <label>连接超时时间</label>
             <input type="text" id="probePortTimeout" placeholder="如 3s / 500ms，留空用默认 1s" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
           </div>
+          <div class="form-group" style="max-width:150px;">
+            <label>探测间隔</label>
+            <input type="text" id="probeInterval" placeholder="如 30s / 500ms / 1m，留空用全局默认" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
+          </div>
         </div>
         <div id="probeQuickUdpHint" style="display:none;font-size:12px;color:#cf1322;margin:8px 0 2px">⚠️ UDP 无连接：不配置下方「发送与响应匹配」时判活不可靠，强烈建议配置</div>
         <div style="margin-top:6px">
@@ -822,6 +830,10 @@
         <div class="form-group">
           <label>超时时长</label>
           <input type="text" id="probeTimeout" placeholder="3 = 3秒，也可填 3s/500ms" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
+        </div>
+        <div class="form-group" style="max-width:150px;">
+          <label>探测间隔</label>
+          <input type="text" id="probeTimeoutInterval" placeholder="如 30s / 500ms / 1m，留空用全局默认" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
         </div>
         <div class="form-group" style="max-width:130px;">
           <label>请求方法</label>
@@ -1596,7 +1608,7 @@ function doExport(format) {
 // 草稿让你关掉再打开接着填。
 // 编辑模式不走草稿：它总是从数据库记录加载，草稿会污染编辑结果，所以 openEditSite 会清掉它。
 let siteDraft = null;
-const _SITE_FIELD_IDS = ["f_name","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_probe_codes","f_probe_timeout","f_probe_protocol","f_probe_read_timeout","f_probe_send","f_probe_expect","f_probe_method","f_probe_follow_redirects","f_probe_headers","f_probe_body","f_probe_tls_ca"];
+const _SITE_FIELD_IDS = ["f_name","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_probe_codes","f_probe_timeout","f_probe_interval","f_probe_protocol","f_probe_read_timeout","f_probe_send","f_probe_expect","f_probe_method","f_probe_follow_redirects","f_probe_headers","f_probe_body","f_probe_tls_ca"];
 
 function _readSiteFields() {
   const d = {};
@@ -1668,6 +1680,7 @@ function openEditSite(btn) {
   $("f_monitor").checked = !!s.monitor;
   $("f_probe_codes").value = s.probe_status_codes || "";
   $("f_probe_timeout").value = s.probe_timeout || "";
+  $("f_probe_interval").value = s.probe_interval || "";
   $("f_probe_protocol").value = s.probe_protocol || "tcp";
   $("f_probe_read_timeout").value = s.probe_read_timeout || "";
   $("f_probe_send").value = escCtl(s.probe_send || "");
@@ -1728,6 +1741,7 @@ async function saveSite(btn) {
       monitor: $("f_monitor").checked,
       probe_status_codes: $("f_probe_codes").value.trim(),
       probe_timeout: $("f_probe_timeout").value.trim(),
+      probe_interval: $("f_probe_interval").value.trim(),
       probe_protocol: $("f_probe_protocol").value,
       probe_read_timeout: $("f_probe_read_timeout").value.trim(),
       probe_send: $("f_probe_send").value,
@@ -1762,6 +1776,10 @@ async function saveSite(btn) {
       // 端口拨测：读超时格式与超时一致（纯数字自动按秒，或带单位 ms/s/m）
       if (!hasUrl && data.probe_read_timeout && !/^(\d+(ms|s|m)?)?$/.test(data.probe_read_timeout)) {
         showToast("读超时格式不对：只能填数字或加 ms / s / m 单位（如 500ms / 3s）", "error"); return;
+      }
+      // 探测间隔：格式与超时一致（纯数字自动按秒，或带单位 ms/s/m）
+      if (data.probe_interval && !/^(\d+(ms|s|m)?)?$/.test(data.probe_interval)) {
+        showToast("探测间隔格式不对：只能填数字或加 ms / s / m 单位（如 30s / 500ms / 1m）", "error"); return;
       }
     }
     if (id) {
@@ -1860,6 +1878,7 @@ function sitePayload(s, overrides = {}) {
     monitor: !!s.monitor,
     probe_status_codes: s.probe_status_codes || "",
     probe_timeout: s.probe_timeout || "",
+    probe_interval: s.probe_interval || "",
     probe_method: s.probe_method || "",
     probe_headers: s.probe_headers || "",
     probe_body: s.probe_body || "",
@@ -2160,6 +2179,7 @@ function openProbeModal(btn) {
   if (isPort) {
     $("probeProtocol").value = s.probe_protocol || "tcp";
     $("probePortTimeout").value = s.probe_timeout || "";
+    $("probeInterval").value = s.probe_interval || "";
     $("probeSend").value = escCtl(s.probe_send || "");
     $("probeExpect").value = escCtl(s.probe_expect || "");
     $("probeReadTimeout").value = s.probe_read_timeout || "";
@@ -2171,6 +2191,7 @@ function openProbeModal(btn) {
     // 不能清空，否则用户看不到也改不了
     $("probeCodes").value = s.probe_status_codes || "200";
     $("probeTimeout").value = s.probe_timeout || "";
+    $("probeTimeoutInterval").value = s.probe_interval || "";
     $("probeMethod").value = s.probe_method || "";
     $("probeFollow").value = (s.probe_follow_redirects === true || s.probe_follow_redirects === false)
       ? String(s.probe_follow_redirects) : "";
@@ -2198,9 +2219,14 @@ async function confirmProbeJoin(btn) {
     if (!s) { closeProbeModal(); return; }
     const isPort = probeModalMode === "port";
     const timeout = isPort ? $("probePortTimeout").value.trim() : $("probeTimeout").value.trim();
+    const interval = isPort ? $("probeInterval").value.trim() : $("probeTimeoutInterval").value.trim();
     const codes = isPort ? "" : ($("probeCodes").value.trim() || "200");
     const headers = isPort ? "" : $("probeHeaders").value.trim();
     if (!validProbeParams(codes, timeout, headers)) return;
+    // 探测间隔：格式与超时一致（纯数字自动按秒，或带单位 ms/s/m）
+    if (interval && !/^(\d+(ms|s|m)?)?$/.test(interval)) {
+      showToast("探测间隔格式不对：只能填数字或加 ms / s / m 单位（如 30s / 500ms / 1m）", "error"); return;
+    }
     const overrides = { monitor: true };
     if (isPort) {
       const readTimeout = $("probeReadTimeout").value.trim();
@@ -2209,12 +2235,14 @@ async function confirmProbeJoin(btn) {
       }
       overrides.probe_protocol = $("probeProtocol").value;
       overrides.probe_timeout = timeout;
+      overrides.probe_interval = interval;
       overrides.probe_read_timeout = readTimeout;
       overrides.probe_send = $("probeSend").value;
       overrides.probe_expect = $("probeExpect").value;
     } else {
       overrides.probe_status_codes = codes;
       overrides.probe_timeout = timeout;
+      overrides.probe_interval = interval;
       overrides.probe_method = $("probeMethod").value;
       overrides.probe_follow_redirects = $("probeFollow").value === "" ? null : $("probeFollow").value === "true";
       overrides.probe_headers = headers;
