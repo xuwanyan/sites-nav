@@ -138,6 +138,8 @@ class SiteIn(BaseModel):
     remark: str = Field(default="", max_length=500)
     monitor: bool = False
     # 拨测参数：留空用默认（状态码 200、GET、不设置超时）；状态码多个用 | 分隔，超时如 3s/500ms/1m（纯数字自动按秒）
+    # 自定义探测地址：下拉三选一（域名/公网/内网），留空自动按 域名>公网>内网 取
+    probe_url: str = Field(default="", max_length=500)
     probe_status_codes: str = Field(default="", pattern=r"^(\d{3}(\|\d{3})*)?$")
     probe_timeout: str = Field(default="", pattern=r"^(\d+(ms|s|m))?$")
     # 探测间隔：留空用 categraf 全局默认；如 30s/500ms/1m（纯数字自动按秒）
@@ -254,6 +256,7 @@ FIELD_DEFAULTS = {
     "env": "",
     "remark": "",
     "monitor": False,
+    "probe_url": "",
     "probe_status_codes": "",
     "probe_timeout": "",
     "probe_interval": "",
@@ -930,8 +933,8 @@ def _url_host_error_checked(v: str) -> str:
 
 
 def _pick_probe_url(site: dict) -> str:
-    """拨测地址：域名 > 公网地址 > 内网地址。无 scheme 时补 http://"""
-    url = (site.get("domain") or "").strip() or (site.get("public_url") or "").strip() or (site.get("private_url") or "").strip()
+    """拨测地址：优先用站点自选的 probe_url；否则 域名 > 公网地址 > 内网地址。无 scheme 时补 http://"""
+    url = (site.get("probe_url") or "").strip() or (site.get("domain") or "").strip() or (site.get("public_url") or "").strip() or (site.get("private_url") or "").strip()
     if not url:
         return ""
     if not url.lower().startswith(("http://", "https://")):

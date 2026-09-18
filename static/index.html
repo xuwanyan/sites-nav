@@ -833,6 +833,10 @@
       <!-- HTTP 拨测（有 URL 的网站类资源） -->
       <div id="probeHttpFields">
       <div class="form-row">
+        <div class="form-group" style="max-width:220px;">
+          <label>探测地址</label>
+          <select id="probeUrlSel"><option value="">自动（域名&gt;公网&gt;内网）</option></select>
+        </div>
         <div class="form-group">
           <label>期望状态码</label>
           <input type="text" id="probeCodes" placeholder="200" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
@@ -1350,11 +1354,13 @@ function urlRowHtml(s) {
 // 站点是否处于监控启用态
 function monitorEnabled(s) { return !!s.monitor; }
 
-// 实际探测地址（HTTP）：域名 > 公网 > 内网；端口拨测无 URL，返回 ""（由连接串处理）
+// 实际探测地址（HTTP）：优先站点自选 probe_url；否则 域名 > 公网 > 内网；端口拨测无 URL，返回 ""（由连接串处理）
 function probeTargetValue(s) {
+  const manual = (s.probe_url || "").trim();
   const d = (s.domain || "").trim();
   const pub = (s.public_url || "").trim();
   const priv = (s.private_url || "").trim();
+  if (manual) return manual;
   if (d) return d;
   if (pub) return pub;
   return priv;
@@ -2221,6 +2227,14 @@ function openProbeModal(btn) {
     $("probeQuickAdvToggle").innerHTML = "▸ 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）";
     updateProbeQuickUdpHint();
   } else {
+    // 探测地址下拉：列出该站点已填的 域名/公网/内网 + 自动
+    const sel = $("probeUrlSel");
+    const auto = `<option value="">自动（域名&gt;公网&gt;内网）</option>`;
+    const opts = [["域名", "domain"], ["公网", "public_url"], ["内网", "private_url"]]
+      .map(([lab, k]) => { const v = (s[k] || "").trim(); return v ? `<option value="${escapeHtml(v)}">${lab} · ${escapeHtml(v)}</option>` : ""; })
+      .join("");
+    sel.innerHTML = auto + opts;
+    if ((s.probe_url || "").trim()) sel.value = s.probe_url;
     // 已有参数原样回填：monitor=false 但保留了拨测参数的记录（CSV 导入不校验这俩搭配）
     // 不能清空，否则用户看不到也改不了
     $("probeCodes").value = s.probe_status_codes || "200";
@@ -2274,6 +2288,7 @@ async function confirmProbeJoin(btn) {
       overrides.probe_send = $("probeSend").value;
       overrides.probe_expect = $("probeExpect").value;
     } else {
+      overrides.probe_url = $("probeUrlSel").value;
       overrides.probe_status_codes = codes;
       overrides.probe_timeout = timeout;
       overrides.probe_interval = interval;
