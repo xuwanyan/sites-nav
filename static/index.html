@@ -324,6 +324,16 @@
   }
   .url-row a:hover { text-decoration: underline; }
   .url-empty { color: #bfbfbf; font-style: italic; }
+  .url-mon {
+    font-size: 10px;
+    color: #389e0d;
+    background: #f6ffed;
+    border: 1px solid #b7eb8f;
+    padding: 0 5px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
 
   /* 复制按钮 */
   .copy-btn {
@@ -1298,17 +1308,18 @@ function cardBodyHtml(s) {
     html += `<div class="card-urls">${urlRowHtml(s)}</div>`;
   }
   if (hasConn) {
-    html += `<div style="margin-top:${hasUrl ? "10px" : "0"}">${connBoxHtml(s.connection)}</div>`;
+    html += `<div style="margin-top:${hasUrl ? "10px" : "0"}">${connBoxHtml(s)}</div>`;
   }
   if (!html) html = `<div style="font-size:12px; color:#bfbfbf; padding:8px 0;">— 未填写 URL 或连接串 —</div>`;
   return html;
 }
 
-// 连接串块（单行紧凑展示 + 复制）
-function connBoxHtml(value) {
-  const v = (value || "").trim();
+// 连接串块（单行紧凑展示 + 复制）；仅连接串的端口拨测目标在行尾标「已监控」
+function connBoxHtml(s) {
+  const v = (s.connection || "").trim();
   if (!v) return `<div class="conn-box"><span class="txt">— 未填写 —</span></div>`;
-  return `<div class="conn-box"><span class="txt">${escapeHtml(v)}</span><span class="icon" data-copy="${escapeAttr(v)}" onclick="copyGroupItem(this)" title="复制连接串">📋</span></div>`;
+  const mon = (s.monitor && !hasAnyUrl(s)) ? `<span class="url-mon">📡 已监控</span>` : "";
+  return `<div class="conn-box"><span class="txt">${escapeHtml(v)}</span>${mon}<span class="icon" data-copy="${escapeAttr(v)}" onclick="copyGroupItem(this)" title="复制连接串">📋</span></div>`;
 }
 
 // 复制单个连接串（区别于整组复制）。值从 data-copy 读，见 escapeAttr 的注释
@@ -1317,19 +1328,42 @@ function copyGroupItem(el) {
 }
 
 // 站点/环境列共用的 URL 行渲染
+// 已监控且该行恰好是实际探测目标时，行尾加「📡 已监控」小徽标（探测地址优先级：域名 > 公网 > 内网）
 function urlRowHtml(s) {
+  const probeVal = monitorEnabled(s) ? probeTargetValue(s) : "";
+  const mon = v => (probeVal && v === probeVal)
+    ? `<span class="url-mon">📡 已监控</span>` : "";
   const urlRow = (label, cls, value) => value
-    ? `<div class="url-row"><span class="url-label ${cls}">${label}</span><a href="${escapeAttr(normalizeUrl(value))}" target="_blank" rel="noopener">${escapeHtml(value)}</a><button class="copy-btn" data-copy="${escapeAttr(value)}">复制</button></div>`
+    ? `<div class="url-row"><span class="url-label ${cls}">${label}</span><a href="${escapeAttr(normalizeUrl(value))}" target="_blank" rel="noopener">${escapeHtml(value)}</a>${mon(value)}<button class="copy-btn" data-copy="${escapeAttr(value)}">复制</button></div>`
     : `<div class="url-row"><span class="url-label ${cls}">${label}</span><span class="url-empty">未配置</span></div>`;
   const publicUrl = (s.public_url || "").trim();
   const internalUrl = (s.private_url || "").trim();
   const domain = (s.domain || "").trim();
-  // 只显示填了的 URL 行，域名与公网重复时不重复显示
+  // 只显示填了的 URL 行，域名与公网重复时不重复显示；顺序：域名 → 公网 → 内网
   const rows = [];
+  if (domain && domain !== publicUrl) rows.push(urlRow("域名", "domain", domain));
   if (publicUrl) rows.push(urlRow("公网", "public", publicUrl));
   if (internalUrl) rows.push(urlRow("内网", "internal", internalUrl));
-  if (domain && domain !== publicUrl) rows.push(urlRow("域名", "domain", domain));
   return rows.join("");
+}
+
+// 站点是否处于监控启用态
+function monitorEnabled(s) { return !!s.monitor; }
+
+// 实际探测地址（HTTP）：域名 > 公网 > 内网；端口拨测无 URL，返回 ""（由连接串处理）
+function probeTargetValue(s) {
+  const d = (s.domain || "").trim();
+  const pub = (s.public_url || "").trim();
+  const priv = (s.private_url || "").trim();
+  if (d) return d;
+  if (pub) return pub;
+  return priv;
+}
+
+// 拨测配置概要（挂在「已监控」徽标后）：HTTP 显示期望状态码，端口显示协议
+function probeCfgLabel(s) {
+  if (!hasAnyUrl(s)) return ((s.probe_protocol || "tcp").toUpperCase());
+  return "期望 " + (s.probe_status_codes ? String(s.probe_status_codes) : "200");
 }
 
 // 同站点名下某环境的列（分组卡用）
@@ -1344,7 +1378,7 @@ function envCol(env, entrySites) {
       <span class="env-col-label ${isProd ? "prod" : "test"}">${label}</span>
       <span style="display:flex; align-items:center; gap:10px;">
         ${entrySites.filter(s => s.monitor).map(s =>
-          `<span class="env-tag env-probe" id="probe-${escapeAttr(s.id)}" title="${escapeAttr(probeTitle(s))}" style="font-size:11px">📡 已监控</span>`).join("")}
+          `<span class="env-tag env-probe" id="probe-${escapeAttr(s.id)}" title="${escapeAttr(probeTitle(s))}" style="font-size:11px">📡 已监控 · ${escapeHtml(probeCfgLabel(s))}</span>`).join("")}
         ${isAdmin() ? entrySites.map(s => monitorBtn(s)).join("") : ""}
         ${isAdmin() ? entrySites.map(s => `<button class="btn btn-default btn-sm" data-edit-id="${escapeAttr(s.id)}" onclick="openEditSite(this)">✏️ 编辑</button>`).join("") : ""}
         ${isAdmin() ? entrySites.map(s => `<button class="btn btn-danger btn-sm" data-del-id="${escapeAttr(s.id)}" data-del-name="${escapeAttr(s.name)}" data-del-env="${escapeAttr(env)}" onclick="openDeleteModal(this)">🗑️ 删除</button>`).join("") : ""}
