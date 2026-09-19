@@ -30,7 +30,11 @@ set -euo pipefail
 #   sudo bash /tmp/bootstrap.sh
 # ═════════════════════════════════════════════════════════════════
 
-REPO_URL="${REPO_URL:-https://github.com/xuwanyan/sites-nav.git}"
+# GitHub 加速镜像前缀：可选。设了 GH_MIRROR 就在 git 仓库地址前拼一层国内镜像。
+# 与 deploy_versions.sh 的 GH_MIRROR 同一套：服务器只要 export GH_MIRROR 即可同时
+# 加速 raw 下载和 git 拉取。示例：export GH_MIRROR=https://ghproxy.com
+GH_MIRROR="${GH_MIRROR:-}"
+REPO_URL="${REPO_URL:-${GH_MIRROR}https://github.com/xuwanyan/sites-nav.git}"
 # APP_DIR / BRANCH 取位置参数，环境变量兜底（位置参数能穿过 sudo）。
 # --deploy 是开关：跑完准备后接着部署。不传则只准备、不启动。
 _ENV_APP_DIR="${APP_DIR:-}"

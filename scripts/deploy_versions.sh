@@ -17,7 +17,13 @@ set -euo pipefail
 #   sudo bash /tmp/deploy_versions.sh
 # ═════════════════════════════════════════════════════════════════
 
-BOOTSTRAP_URL="https://raw.githubusercontent.com/xuwanyan/sites-nav/main/scripts/bootstrap.sh"
+# GitHub 加速镜像前缀：可选。设了 GH_MIRROR 就在拉 raw 和 git 前拼一层国内镜像。
+# 常见值（任选其一，失效就换）：
+#   https://ghproxy.com         https://gh-proxy.com
+#   https://gitclone.com/github.com   （git clone 专用）
+GH_MIRROR="${GH_MIRROR:-}"
+_GH_RAW_BASE="${GH_MIRROR}https://raw.githubusercontent.com"
+BOOTSTRAP_URL="${_GH_RAW_BASE}/xuwanyan/sites-nav/main/scripts/bootstrap.sh"
 BOOTSTRAP_SH="${BOOTSTRAP_SH:-/tmp/bootstrap.sh}"
 
 LOG()  { printf '\033[1;34m▶\033[0m %s\n' "$*"; }
