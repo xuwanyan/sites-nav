@@ -132,6 +132,17 @@
   .cat-tag.tag-prod.active { background: #ff4d4f; color: #fff; box-shadow: 0 2px 8px rgba(255,77,79,.35); }
   .cat-tag.tag-test { border-color: #52c41a; color: #52c41a; }
   .cat-tag.tag-test.active { background: #52c41a; color: #fff; }
+  /* 协议标签配色：用青色系与环境(红/绿/蓝)、监控(灰)区分，避免跨组颜色混淆 */
+  .cat-tag.tag-http { border-color: #13c2c2; color: #08979c; background: #e6fffb; }
+  .cat-tag.tag-http.active { background: #13c2c2; color: #fff; border-color: #13c2c2; }
+  .cat-tag.tag-net { border-color: #722ed1; color: #722ed1; background: #f9f0ff; }
+  .cat-tag.tag-net.active { background: #722ed1; color: #fff; border-color: #722ed1; }
+  .cat-tag.tag-dim { opacity: .45; cursor: not-allowed; }
+  /* 监控状态：已监控用填充绿（醒目），未监控灰 */
+  .cat-tag.tag-mon { border-color: #52c41a; color: #389e0d; background: #f6ffed; }
+  .cat-tag.tag-mon.active { background: #52c41a; color: #fff; border-color: #52c41a; }
+  .cat-tag.tag-unmon { border-color: #8c8c8c; color: #595959; }
+  .cat-tag.tag-unmon.active { background: #595959; color: #fff; border-color: #595959; }
 
   /* ── 布局A：左侧分类目录 + 右侧内容网格 ── */
   :root { --head-h: 61px; }
@@ -1156,14 +1167,19 @@ function renderCategories() {
   <span style="display:inline-block; width:1px; height:20px; background:#444; margin:0 8px; vertical-align:middle;"></span>
   ${["全部", "HTTP", "TCP", "UDP"].map(p => {
     const n = protocolCount(p);
+    const ctx = p === "全部" ? "tag-dim" : (p === "HTTP" ? "tag-http" : "tag-net");
+    // 具体协议计数为0时置灰不可点；「全部」始终可选
+    const dead = p !== "全部" && n === 0;
     const ic = p === "全部" ? "🔀" : p;
-    return `<span class="cat-tag ${p === activeProtocol ? "active" : ""}" style="${p === "HTTP" ? "color:#52c41a; border-color:#52c41a66" : p === "TCP" || p === "UDP" ? "color:#722ed1; border-color:#722ed166" : ""}" onclick="filterProtocol('${p}')">${ic} <small>(${n})</small></span>`;
+    const tag = `cat-tag ${ctx} ${p === activeProtocol ? "active" : ""}${dead ? "tag-dim" : ""}`;
+    return `<span class="${tag.trim()}" ${dead ? "" : `onclick="filterProtocol('${p}')"`} title="${dead ? "暂无该协议监控目标" : ""}">${ic} <small>(${n})</small></span>`;
   }).join("")}
   <span style="display:inline-block; width:1px; height:20px; background:#444; margin:0 8px; vertical-align:middle;"></span>
   ${["已监控", "未监控"].map(m => {
     const n = sites.filter(s => m === "已监控" ? !!s.monitor : (!s.monitor && (s.domain || s.public_url || s.private_url || s.connection))).length;
     const ic = m === "已监控" ? "📡" : "💤";
-    return `<span class="cat-tag ${m === activeMonitor ? "active" : ""}" style="${m === "已监控" ? "color:#1677ff; border-color:#1677ff66; background:rgba(22,119,255,.08)" : "color:#a6a6a6; border-color:#5a5a5a"}" onclick="filterMonitor('${m}')">${ic} ${m} <small>(${n})</small></span>`;
+    const tag = `cat-tag ${m === "已监控" ? "tag-mon" : "tag-unmon"} ${m === activeMonitor ? "active" : ""}`;
+    return `<span class="${tag}" onclick="filterMonitor('${m}')">${ic} ${m} <small>(${n})</small></span>`;
   }).join("")}
   ${activeMonitor === "全部" || activeProtocol !== "全部" ? `<span class="cat-tag active" onclick="clearProbeFilter()" title="清除监控/协议筛选">✕ 清除</span>` : ""}`;
 
