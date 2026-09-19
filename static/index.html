@@ -957,6 +957,7 @@ let groupRegistry = [];
 let activeCategory = "全部";
 let activeEnv = "全部";
 let activeMonitor = "全部";  // 拨测状态筛选：全部 / 已监控 / 未监控
+let activeProtocol = "全部"; // 拨测协议筛选：全部 / HTTP / TCP / UDP（仅作用于已监控目标）
 let token = localStorage.getItem("nav_token") || "";
 let role = localStorage.getItem("nav_role") || "user";
 const isAdmin = () => token && role === "admin";
@@ -1153,12 +1154,18 @@ function renderCategories() {
     return `<span class="cat-tag ${envCls[e] || ""} ${e === activeEnv ? "active" : ""}" onclick="filterEnv('${e}')">${label} <small>(${n})</small></span>`;
   }).join("") + `
   <span style="display:inline-block; width:1px; height:20px; background:#444; margin:0 8px; vertical-align:middle;"></span>
+  ${["全部", "HTTP", "TCP", "UDP"].map(p => {
+    const n = protocolCount(p);
+    const ic = p === "全部" ? "🔀" : p;
+    return `<span class="cat-tag ${p === activeProtocol ? "active" : ""}" style="${p === "HTTP" ? "color:#52c41a; border-color:#52c41a66" : p === "TCP" || p === "UDP" ? "color:#722ed1; border-color:#722ed166" : ""}" onclick="filterProtocol('${p}')">${ic} <small>(${n})</small></span>`;
+  }).join("")}
+  <span style="display:inline-block; width:1px; height:20px; background:#444; margin:0 8px; vertical-align:middle;"></span>
   ${["已监控", "未监控"].map(m => {
     const n = sites.filter(s => m === "已监控" ? !!s.monitor : (!s.monitor && (s.domain || s.public_url || s.private_url || s.connection))).length;
     const ic = m === "已监控" ? "📡" : "💤";
     return `<span class="cat-tag ${m === activeMonitor ? "active" : ""}" style="${m === "已监控" ? "color:#1677ff; border-color:#1677ff66; background:rgba(22,119,255,.08)" : "color:#a6a6a6; border-color:#5a5a5a"}" onclick="filterMonitor('${m}')">${ic} ${m} <small>(${n})</small></span>`;
   }).join("")}
-  ${activeMonitor === "全部" ? "" : `<span class="cat-tag active" onclick="filterMonitor('全部')" title="清除监控筛选">✕ 清除</span>`}`;
+  ${activeMonitor === "全部" || activeProtocol !== "全部" ? `<span class="cat-tag active" onclick="clearProbeFilter()" title="清除监控/协议筛选">✕ 清除</span>` : ""}`;
 
   // 分类只显示当前环境下实际存在的；切环境后若原选中分类不存在则回到「全部」
   let pool = activeEnv === "全部" ? sites : sites.filter(s => s.env === activeEnv);
@@ -1205,6 +1212,28 @@ function filterMonitor(m) {
   renderSites();
 }
 
+// 实际拨测协议：有 URL → HTTP；仅连接串 → probe_protocol 或默认 tcp
+function probeProtocolOf(s) {
+  if (hasAnyUrl(s)) return "HTTP";
+  return ((s.probe_protocol || "tcp") + "").toUpperCase();
+}
+// 协议计数：只统计已监控目标。全部=取值为 HTTP/TCP/UDP 的已监控数
+function protocolCount(p) {
+  if (p === "全部") return sites.filter(s => s.monitor && ["HTTP","TCP","UDP"].includes(probeProtocolOf(s))).length;
+  return sites.filter(s => s.monitor && probeProtocolOf(s) === p).length;
+}
+function filterProtocol(p) {
+  activeProtocol = p;
+  renderCategories();
+  renderSites();
+}
+function clearProbeFilter() {
+  activeMonitor = "全部";
+  activeProtocol = "全部";
+  renderCategories();
+  renderSites();
+}
+
 // ==================== 渲染网站卡片 ====================
 function renderSites() {
   const keyword = $("searchInput").value.toLowerCase().trim();
@@ -1219,6 +1248,8 @@ function renderSites() {
     // 拨测状态筛选：与计数口径一致——已监控=monitor 为真；未监控=有地址但没开监控
     if (activeMonitor === "已监控" && !s.monitor) return false;
     if (activeMonitor === "未监控" && (s.monitor || !(s.domain || s.public_url || s.private_url || s.connection))) return false;
+    // 拨测协议筛选：仅作用于已监控目标
+    if (activeProtocol !== "全部" && (!s.monitor || probeProtocolOf(s) !== activeProtocol)) return false;
     return true;
   });
   // 按站点名分组（大小写不敏感、去空格），同 name 的多环境合成一张卡
