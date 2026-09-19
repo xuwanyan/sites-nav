@@ -7,6 +7,18 @@ COPY requirements.txt .
 # -i 指定阿里云 PyPI 镜像：国内构建环境直连 pypi.org 常超时
 RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
 
+# 国内构建环境连 Debian 官方源常超时：换阿里云 apt 源，并安装诊断/探测工具
+# （curl 供命令行拨测与排查、net-tools/iproute2 供容器内网络诊断）
+RUN echo "deb https://mirrors.aliyun.com/debian/ bookworm main non-free non-free-firmware" > /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian/ bookworm-updates main non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian-security/ bookworm-security main" >> /etc/apt/sources.list && \
+    apt-get -o Acquire::Check-Valid-Until=false -o Acquire::http::timeout=10 update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        net-tools \
+        iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
 # 拷贝应用代码与静态资源。
 # app.py 模块级 `from toml_gen import ...`，漏这条 COPY 会导致容器启动即
 # ModuleNotFoundError、无限重启，而 wait_healthy 只会报"超时"，排查方向完全错。
