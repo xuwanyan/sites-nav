@@ -506,6 +506,7 @@
     <span id="adminBadge" class="admin-badge" style="display:none;">运维模式</span>
     <button id="addBtn" class="btn btn-primary" style="display:none;" onclick="openSiteModal()">+ 新增网站</button>
     <button id="importBtn" class="btn btn-default" style="display:none;" onclick="openImportModal()">批量导入</button>
+    <button id="copyAllBtn" class="btn btn-default" onclick="copyAllLinks()">🔗 全部复制</button>
     <button id="exportBtn" class="btn btn-default" style="display:none;" onclick="openExportModal()">导出</button>
     <a id="probesBtn" class="btn btn-default" style="display:none;" href="/probes" target="_blank" rel="noopener">📡 拨测管理</a>
     <button id="usersBtn" class="btn btn-default" style="display:none;" onclick="openUsersModal()">👤 用户管理</button>
@@ -551,8 +552,16 @@
         <select id="f_kind" onchange="onKindChange()">
           <option value="网站">🌐 网站</option>
           <option value="非网站">🔌 非网站</option>
+          <option value="备忘录">📝 备忘录</option>
         </select>
-        <div style="font-size:11px; color:#8c8c8c; margin-top:4px;">网站填 URL 地址走 HTTP 拨测；非网站填连接串走 TCP/UDP 端口拨测</div>
+        <div style="font-size:11px; color:#8c8c8c; margin-top:4px;">网站填 URL 地址走 HTTP 拨测；非网站填连接串走 TCP/UDP 端口拨测；备忘录仅展示文本、不做监控</div>
+      </div>
+      <!-- 备忘录正文（仅 kind=备忘录 时显示）：多行文本，不做拨测 -->
+      <div id="memoField" style="display:none;">
+        <div class="form-group">
+          <label>备忘录内容</label>
+          <textarea id="f_memo_content" rows="6" maxlength="5000" style="width:100%;" placeholder="记录备忘事项，仅展示不做监控（支持换行）"></textarea>
+        </div>
       </div>
       <div class="form-group">
         <label>名称 <span class="required">*</span></label>
@@ -947,6 +956,7 @@ let sites = [];
 let groupRegistry = [];
 let activeCategory = "全部";
 let activeEnv = "全部";
+let activeMonitor = "全部";  // 拨测状态筛选：全部 / 已监控 / 未监控
 let token = localStorage.getItem("nav_token") || "";
 let role = localStorage.getItem("nav_role") || "user";
 const isAdmin = () => token && role === "admin";
@@ -1005,6 +1015,7 @@ const KIND_META = {
   "消息队列": { color: "#722ed1", icon: "📨", placeholder: "10.0.3.4:9092",                        hint: "Kafka 填 bootstrap_servers；RabbitMQ 用 amqp://user:pwd@host:port" },
   "数据库":   { color: "#13c2c2", icon: "🗄️", placeholder: "mysql://user:pwd@10.0.4.5:3306/orders", hint: "推荐 mysql:// / postgres:// 形式；密码敏感建议只在内网可见环境暴露" },
   "存储":     { color: "#52c41a", icon: "☁️", placeholder: "oss-cn-hangzhou.aliyuncs.com/my-bucket", hint: "如 OSS/S3 endpoint + bucket 名" },
+  "备忘录":   { color: "#8c8c8c", icon: "📝", placeholder: "", hint: "仅展示文本，不做监控" },
 };
 // 自定义类型：按名称哈希取色，永远有颜色
 function kindMeta(k) {
@@ -1140,7 +1151,14 @@ function renderCategories() {
     const n = e === "全部" ? sites.length : sites.filter(s => s.env === e).length;
     const label = e === "全部" ? "🌐 全部环境" : (e === "生产环境" ? "🔴 生产环境" : "🟢 测试环境");
     return `<span class="cat-tag ${envCls[e] || ""} ${e === activeEnv ? "active" : ""}" onclick="filterEnv('${e}')">${label} <small>(${n})</small></span>`;
-  }).join("");
+  }).join("") + `
+  <span style="display:inline-block; width:1px; height:20px; background:#444; margin:0 8px; vertical-align:middle;"></span>
+  ${["已监控", "未监控"].map(m => {
+    const n = sites.filter(s => m === "已监控" ? !!s.monitor : (!s.monitor && (s.domain || s.public_url || s.private_url || s.connection))).length;
+    const ic = m === "已监控" ? "📡" : "💤";
+    return `<span class="cat-tag ${m === activeMonitor ? "active" : ""}" style="${m === "已监控" ? "color:#1677ff; border-color:#1677ff66; background:rgba(22,119,255,.08)" : "color:#a6a6a6; border-color:#5a5a5a"}" onclick="filterMonitor('${m}')">${ic} ${m} <small>(${n})</small></span>`;
+  }).join("")}
+  ${activeMonitor === "全部" ? "" : `<span class="cat-tag active" onclick="filterMonitor('全部')" title="清除监控筛选">✕ 清除</span>`}`;
 
   // 分类只显示当前环境下实际存在的；切环境后若原选中分类不存在则回到「全部」
   let pool = activeEnv === "全部" ? sites : sites.filter(s => s.env === activeEnv);
@@ -1180,6 +1198,13 @@ function filterEnv(env) {
   renderSites();
 }
 
+// 拨测状态筛选：全部 / 已监控 / 未监控。未监控只算「有地址但没开监控」的站点，备忘录/无地址的不计入。
+function filterMonitor(m) {
+  activeMonitor = m;
+  renderCategories();
+  renderSites();
+}
+
 // ==================== 渲染网站卡片 ====================
 function renderSites() {
   const keyword = $("searchInput").value.toLowerCase().trim();
@@ -1187,10 +1212,13 @@ function renderSites() {
   let filtered = sites.filter(s => {
     if (activeCategory !== "全部" && catOf(s) !== activeCategory) return false;
     if (keyword) {
-      const ok = [s.name, s.kind, s.category, s.public_url, s.private_url, s.domain, s.connection, s.owner, s.env, s.remark]
+      const ok = [s.name, s.kind, s.category, s.public_url, s.private_url, s.domain, s.connection, s.owner, s.env, s.remark, s.memo_content]
         .some(v => (v || "").toLowerCase().includes(keyword));
       if (!ok) return false;
     }
+    // 拨测状态筛选：与计数口径一致——已监控=monitor 为真；未监控=有地址但没开监控
+    if (activeMonitor === "已监控" && !s.monitor) return false;
+    if (activeMonitor === "未监控" && (s.monitor || !(s.domain || s.public_url || s.private_url || s.connection))) return false;
     return true;
   });
   // 按站点名分组（大小写不敏感、去空格），同 name 的多环境合成一张卡
@@ -1256,6 +1284,7 @@ function siteCard(s) {
         <span class="card-name">${escapeHtml(s.name)}</span>
         <span style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
           <span class="kind-tag" style="background:${meta.color}" title="${escapeAttr(s.kind || "网站")}">${meta.icon} ${escapeHtml(s.kind || "网站")}</span>
+          ${probeKindMismatchTag(s)}
           ${probeBadge(s)}
           ${s.env ? `<span class="env-tag ${envClass}">${escapeHtml(s.env)}</span>` : ""}
           ${isAdmin() ? `<span class="card-actions">
@@ -1294,6 +1323,8 @@ function probeBadge(s) {
 // 监控快捷按钮：有 URL（HTTP 拨测）或仅连接串（端口拨测）的资源都出。
 // 两者都无 → 无地址可探测，不出按钮。
 function monitorBtn(s) {
+  // 备忘录不参与拨测：不出监控按钮
+  if ((s.kind || "") === "备忘录") return "";
   const hasUrl = hasAnyUrl(s);
   const hasConn = !!(s.connection || "").trim();
   if (!hasUrl && !hasConn) return "";
@@ -1303,8 +1334,13 @@ function monitorBtn(s) {
   return `<button class="btn btn-default btn-sm" data-site-id="${escapeAttr(s.id)}" onclick="openProbeModal(this)">📡 加入监控</button>`;
 }
 
-// 卡片主体：URL 行 + 连接块（哪个填了显示哪个，都填都显示）
+// 卡片主体：URL 行 + 连接块（哪个填了显示哪个，都填都显示）；备忘录单独渲染正文
 function cardBodyHtml(s) {
+  if ((s.kind || "") === "备忘录") {
+    const mc = (s.memo_content || "").trim();
+    if (!mc) return `<div style="font-size:12px; color:#bfbfbf; padding:8px 0;">— 空备忘录 —</div>`;
+    return `<div class="memo-body" style="white-space:pre-wrap; word-break:break-word; font-size:13px; color:#333; line-height:1.6; padding:8px 0;">${escapeHtml(mc)}</div>`;
+  }
   const hasUrl = hasAnyUrl(s);
   const hasConn = !!(s.connection || "").trim();
   let html = "";
@@ -1370,6 +1406,21 @@ function probeTargetValue(s) {
 function probeCfgLabel(s) {
   if (!hasAnyUrl(s)) return ((s.probe_protocol || "tcp").toUpperCase());
   return "期望 " + (s.probe_status_codes ? String(s.probe_status_codes) : "200");
+}
+
+// 标注 kind 标签与实际探测方式不一致：kind=网站但只填连接串（实际端口拨测），
+// 或 kind=非网站但填了 URL（实际 HTTP 拨测）。一致时返回空串。
+function probeKindMismatchTag(s) {
+  const k = (s.kind || "").trim();
+  const isNet = !hasAnyUrl(s) && !!(s.connection || "").trim();
+  const isHttp = hasAnyUrl(s);
+  if (k === "网站" && isNet) {
+    return `<span class="kind-tag" style="background:#faad14;color:#fff" title="该记录资源类型标为「网站」，但只填了连接串，实际走端口(TCP/UDP)拨测">⚠ 实际端口拨测</span>`;
+  }
+  if (k === "非网站" && isHttp) {
+    return `<span class="kind-tag" style="background:#1677ff;color:#fff" title="该记录资源类型标为「非网站」，但填了 URL，实际走 HTTP 拨测">⚠ 实际HTTP拨测</span>`;
+  }
+  return "";
 }
 
 // 同站点名下某环境的列（分组卡用）
@@ -1508,6 +1559,31 @@ function copyText(text, btn) {
   }
 }
 
+// 全部复制：把当前所有站点/备忘录用「名称：地址」形式导出到剪贴板。
+// 地址顺序对齐卡片展示：域名 > 公网 > 内网 > 连接串，仅收集非空项；
+// 备忘录没有地址，输出正文首行。与账号无关，普通用户可一键复制清单。
+function copyAllLinks() {
+  if (!sites.length) { showToast("暂无可复制的内容", "error"); return; }
+  const lines = sites.map(s => {
+    const name = (s.name || "").trim();
+    if ((s.kind || "") === "备忘录") {
+      const first = ((s.memo_content || "").replace(/\r?\n.*/s, "") || "").trim();
+      return first ? `${name}：${first}` : name;
+    }
+    const addrs = [
+      (s.domain || "").trim(), (s.public_url || "").trim(),
+      (s.private_url || "").trim(), (s.connection || "").trim(),
+    ].filter(Boolean);
+    const body = addrs.length ? addrs.join(" | ") : "— 未填写地址 —";
+    return `${name}：${body}`;
+  }).join("\n");
+  const btn = $("copyAllBtn");
+  navigator.clipboard.writeText(lines).then(() => {
+    showToast(`已复制 ${sites.length} 条`, "success");
+    if (btn) { btn.textContent = "✓ 已复制"; setTimeout(() => btn.textContent = "🔗 全部复制", 1500); }
+  }).catch(() => showToast("复制失败，请手动选择复制", "error"));
+}
+
 // ==================== 运维登录 ====================
 // 登录入口已外迁至独立地址 /admin（static/admin.html），首页不再提供登录 UI；
 // 此处仅保留退出登录：token 由 /admin 登录后写入 localStorage
@@ -1542,10 +1618,10 @@ function updateAdminUI() {
 }
 
 // ==================== 批量导入 / 导出 ====================
-const CSV_PLACEHOLDER = `系统名称,资源类型,分类,域名,公网地址,内网地址,连接串,负责人,环境标识,备注,拨测监控,拨测状态码,拨测超时,拨测方法,拨测请求头,拨测Body,跟随重定向,跳过证书校验,私有CA路径
-GitLab,网站,代码仓库,gitlab.company.com,https://git.company.com,http://10.0.0.10:8080,,张三,生产环境,SSO 登录,是,200|301,3s,GET,"[""X-Custom-Token"",""abc123""]",,false,false,
-Redis-主库,缓存,中间件,,,,redis://10.0.1.5:6379/0,李四,生产环境,主从架构,是,,,,,,,,
-Kafka,消息队列,中间件,,,,10.0.3.4:9092,王五,生产环境,,是,,,,,,,,`;
+const CSV_PLACEHOLDER = `系统名称,资源类型,分类,域名,公网地址,内网地址,连接串,负责人,环境标识,备注,备忘录内容,拨测监控,拨测状态码,拨测超时,拨测方法,拨测请求头,拨测Body,跟随重定向,跳过证书校验,私有CA路径
+GitLab,网站,代码仓库,gitlab.company.com,https://git.company.com,http://10.0.0.10:8080,,张三,生产环境,SSO 登录,,是,200|301,3s,GET,"[""X-Custom-Token"",""abc123""]",,false,false,
+Redis-主库,缓存,中间件,,,,redis://10.0.1.5:6379/0,李四,生产环境,主从架构,,是,,,,,,,,
+上线注意事项,备忘录,运维,,,,,,,生产环境,,记得备份后发布且灰度,否,,,,,,,,`;
 
 const JSON_PLACEHOLDER = `[
   {
@@ -1603,8 +1679,8 @@ async function doImport(btn) {
     const skipDetail = skipped.length
       ? `<div style="margin-top:6px;color:#8c8c8c;">${skipped.map(s => "· " + escapeHtml(s.reason)).join("<br>")}</div>`
       : "";
-    box.style.background = res.added ? "#f6ffed" : "#fff7e6";
-    box.innerHTML = `✅ 成功导入 <b>${res.added}</b> 条，跳过 ${res.skipped_count ?? 0} 条。${skipDetail}`;
+    box.style.background = (res.added || res.updated) ? "#f6ffed" : "#fff7e6";
+    box.innerHTML = `✅ 成功导入 <b>${res.added ?? 0}</b> 条，<b style="color:#1677ff">更新已有 ${res.updated ?? 0}</b> 条，跳过 ${res.skipped_count ?? 0} 条。${skipDetail}`;
     await loadSites();
     showToast(`导入完成：新增 ${res.added} 条`, res.added ? "success" : "error");
   } catch (e) {
@@ -1648,7 +1724,7 @@ function doExport(format) {
 // 草稿让你关掉再打开接着填。
 // 编辑模式不走草稿：它总是从数据库记录加载，草稿会污染编辑结果，所以 openEditSite 会清掉它。
 let siteDraft = null;
-const _SITE_FIELD_IDS = ["f_name","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_probe_codes","f_probe_timeout","f_probe_interval","f_probe_protocol","f_probe_read_timeout","f_probe_send","f_probe_expect","f_probe_method","f_probe_follow_redirects","f_probe_headers","f_probe_body","f_probe_tls_ca"];
+const _SITE_FIELD_IDS = ["f_name","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_memo_content","f_probe_codes","f_probe_timeout","f_probe_interval","f_probe_protocol","f_probe_read_timeout","f_probe_send","f_probe_expect","f_probe_method","f_probe_follow_redirects","f_probe_headers","f_probe_body","f_probe_tls_ca"];
 
 function _readSiteFields() {
   const d = {};
@@ -1733,8 +1809,10 @@ function openEditSite(btn) {
   $("f_probe_tls_ca").value = s.probe_tls_ca || "";
   toggleProbeSkip();
   $("f_remark").value = s.remark || "";
-  // 回填 kind：现在只分「网站 / 非网站」，按是否走 HTTP 拨测（有无 URL）归入
-  $("f_kind").value = (s.public_url || s.private_url || s.domain) ? "网站" : "非网站";
+  $("f_memo_content").value = s.memo_content || "";
+  // 回填 kind：备忘录按记录原值；其余按是否走 HTTP 拨测（有无 URL）归入 网站/非网站
+  const hasUrl = s.public_url || s.private_url || s.domain;
+  $("f_kind").value = (s.kind === "备忘录") ? "备忘录" : (hasUrl ? "网站" : "非网站");
   onKindChange();
   toggleProbeParams();
   // 记住初始值做脏检查：只改复选框（如"跳过证书校验"）时 _hasSiteContent 感知不到，
@@ -1778,6 +1856,7 @@ async function saveSite(btn) {
       owner: $("f_owner").value.trim(),
       env: $("f_environment").value,
       remark: $("f_remark").value.trim(),
+      memo_content: $("f_memo_content").value,
       monitor: $("f_monitor").checked,
       probe_status_codes: $("f_probe_codes").value.trim(),
       probe_timeout: $("f_probe_timeout").value.trim(),
@@ -1795,8 +1874,8 @@ async function saveSite(btn) {
     };
     if (!data.name) { showToast("请输入名称", "error"); return; }
     if (!data.env) { showToast("请选择环境标识", "error"); return; }
-    // URL 三字段和连接串至少填一个（非 URL 类资源允许只填连接串）
-    if (!data.public_url && !data.private_url && !data.domain && !data.connection) {
+    // URL 三字段和连接串至少填一个（非 URL 类资源允许只填连接串）；备忘录是纯文本展示，无需地址
+    if (kind !== "备忘录" && !data.public_url && !data.private_url && !data.domain && !data.connection) {
       showToast("域名/公网/内网/连接串至少填一个", "error"); return;
     }
     // URL 主机名合法性 + 三字段不能指向同一个地址（与后端一致，前端先拦）
@@ -1845,15 +1924,16 @@ async function saveSite(btn) {
 }
 
 // ==================== 资源类型切换 ====================
-// 资源类型只分「网站 / 非网站」：网站走 URL/HTTP，非网站走连接串/端口拨测
+// 资源类型三类：网站(URL/HTTP) / 非网站(连接串/端口拨测) / 备忘录(仅展示文本、不监控)
 function onKindChange() {
   const preset = $("f_kind").value;
   const isSiteOnly = (preset === "网站");
-  const isConnOnly = !isSiteOnly; // 非网站
-  // URL 字段：网站可见
-  $("urlFields").style.display = isConnOnly ? "none" : "";
-  // 连接串字段：非网站可见
-  $("connField").style.display = isSiteOnly ? "none" : "";
+  const isConnOnly = (preset === "非网站");
+  const isMemo = (preset === "备忘录");
+  // 备忘录：隐藏 URL/连接串/负责人/拨测区，显示备忘录正文
+  $("memoField").style.display = isMemo ? "" : "none";
+  $("urlFields").style.display = (isConnOnly || isMemo) ? "none" : "";
+  $("connField").style.display = (isSiteOnly || isMemo) ? "none" : "";
   if (isConnOnly) {
     $("connHint").textContent = "非网站：填连接串（host:port 或任意协议 URL），用于 TCP/UDP 端口拨测";
     $("f_connection").placeholder = "如 redis://10.0.1.5:6379/0 或 10.0.3.4:9092";
@@ -1867,11 +1947,23 @@ function onKindChange() {
 
 // 拨测按钮联动：有 URL → HTTP 拨测（完整配置）；无 URL 有连接串 → 端口拨测（仅超时）
 function updateMonitorBtn() {
+  const isMemo = $("f_kind").value === "备忘录";
   const hasUrl = $("f_domain").value.trim() || $("f_public_url").value.trim() || $("f_internal_url").value.trim();
   const hasConn = $("f_connection").value.trim();
   const monitorCb = $("f_monitor");
   const paramsRow = $("probeParamsRow");
   const codesGroup = $("probeCodesGroup");
+  if (isMemo) {
+    // 备忘录不做拨测：强制关闭并禁用监控选项
+    monitorCb.checked = false;
+    monitorCb.disabled = true;
+    monitorCb.style.opacity = ".5";
+    $("monitorHint").textContent = "备忘录仅展示文本，不做拨测监控";
+    paramsRow.style.display = "none";
+    $("probeAdvBlock").style.display = "none";
+    $("probeNetAdvBlock").style.display = "none";
+    return;
+  }
   if (hasUrl) {
     // HTTP 拨测：完整配置（状态码 + 超时 + 高级）
     monitorCb.disabled = false;

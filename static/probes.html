@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>端口拨测管理 - 内部系统导航</title>
+<title>拨测目标管理 - 内部系统导航</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231677ff'/><rect x='5' y='5' width='9.5' height='9.5' rx='2.5' fill='%23fff'/><rect x='17.5' y='5' width='9.5' height='9.5' rx='2.5' fill='%23fff'/><rect x='5' y='17.5' width='9.5' height='9.5' rx='2.5' fill='%23fff'/><rect x='17.5' y='17.5' width='9.5' height='9.5' rx='2.5' fill='%23fff'/></svg>">
 <meta name="theme-color" content="#1677ff">
 <style>
@@ -55,6 +55,7 @@
   }
   .tag-tcp { background: #e6f4ff; color: #1677ff; }
   .tag-udp { background: #fff7e6; color: #fa8c16; }
+  .tag-http { background: #f6ffed; color: #389e0d; }
 
   .empty-state { text-align: center; padding: 60px 20px; color: #999; }
   .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
@@ -125,17 +126,19 @@
 <body>
 
 <div class="header">
-  <h1>📡 端口拨测管理</h1>
+  <h1>📡 拨测目标管理</h1>
   <div class="header-actions">
     <button class="btn btn-default" onclick="location.href='/'">← 返回导航</button>
+    <button class="btn btn-default" onclick="copyAllLinks()">🔗 一键复制全部链接</button>
     <button class="btn btn-default" onclick="renderProbes()">🔄 刷新</button>
   </div>
 </div>
 
 <div class="container">
   <div class="info-bar">
-    本页为只读总览，展示由站点生成的端口拨测目标。新增 / 编辑 / 删除拨测目标请到<b>首页站点填写页</b>：
-    添加或编辑资源时勾选「拨测监控」，非网站资源（无 URL、仅连接串）会自动提取
+    本页为只读总览，展示当前全部拨测目标：<b>HTTP 拨测</b>（来自填了 URL 且勾选「拨测监控」的站点）与
+    <b>端口拨测</b>（来自连接串站点 / 独立端口目标）。新增 / 编辑 / 删除请到<b>首页站点填写页</b>：
+    添加或编辑资源时勾选「拨测监控」，网站填 URL 走 HTTP 拨测，非网站填连接串自动提取
     <code>host:port</code> 走 TCP/UDP 端口拨测，并可在弹窗中选择<b>协议</b>与<b>连接超时时间</b>。
     categraf 通过 <code>http_provider</code> 从本服务拉取配置，配置版本为内容 MD5，内容不变则不重启采集实例。
   </div>
@@ -298,7 +301,7 @@ function escCtl(s) {
 
 async function loadProbes() {
   try {
-    probes = await api("/api/probes");
+    probes = await api("/api/probe-targets");
     renderProbes();
     loadPreview();
   } catch (e) {
@@ -317,6 +320,16 @@ async function loadPreview() {
     // 预览加载失败（如无权限）时不展示卡片，不影响主功能
     $("previewCard").style.display = "none";
   }
+}
+
+function copyAllLinks() {
+  const urls = probes.map(p => (p.url || "")).filter(Boolean);
+  if (!urls.length) { showToast("暂无可复制的链接", "error"); return; }
+  navigator.clipboard.writeText(urls.join("\n")).then(() => {
+    showToast(`已复制 ${urls.length} 个目标地址`);
+  }).catch(() => {
+    showToast("复制失败，请手动选择复制", "error");
+  });
 }
 
 function copyToml(kind) {
@@ -346,21 +359,46 @@ function copyAllToml() {
 
 function renderProbes() {
   if (!probes.length) {
-    $("content").innerHTML = `<div class="empty-state"><div class="icon">📡</div><p>暂无端口拨测目标</p><p style="font-size:12px; margin-top:8px; color:#bbb;">到首页站点填写页为连接串资源勾选「拨测监控」即可生成</p></div>`;
+    $("content").innerHTML = `<div class="empty-state"><div class="icon">📡</div><p>暂无拨测目标</p><p style="font-size:12px; margin-top:8px; color:#bbb;">到首页站点填写页为资源勾选「拨测监控」即可生成</p></div>`;
     return;
   }
-  const rows = probes.map(p => `<tr>
+  const rows = probes.map(p => {
+    const isHttp = p.kind === "http";
+    const kindTag = isHttp
+      ? `<span class="tag tag-http">HTTP</span>`
+      : `<span class="tag tag-${p.protocol === "udp" ? "udp" : "tcp"}">${(p.protocol === "udp" ? "UDP" : "TCP")}</span>`;
+    // 检查项：HTTP 显示期望状态码，端口显示 期望响应（无则仅连通）
+    const check = isHttp
+      ? `<span class="mono">${escapeHtml(p.expected_status_codes || "200")}</span>`
+      : (p.expect
+          ? `<span class="mono" title="${escapeHtml(p.expect)}">${escapeHtml(escCtl(p.expect))}</span>`
+          : `<span style="color:#bbb">—</span>`);
+    // 方法/协议：HTTP 显示请求方法，端口显示协议
+    const method = isHttp
+      ? `<span class="mono">${escapeHtml(p.method || "GET")}</span>`
+      : kindTag;
+    // 超时：HTTP 用 response_timeout，端口用 timeout；都不填显示「默认」
+    const timeout = isHttp
+      ? `<span class="mono">${escapeHtml(p.response_timeout || "默认")}</span>`
+      : `<span class="mono">${escapeHtml(p.timeout || "默认")}</span>`;
+    // 发送内容：仅端口拨测有（HTTP 拨测不适用，留空占位保持列对齐）
+    const send = isHttp
+      ? `<td style="color:#bbb">—</td>`
+      : `<td class="mono" title="${escapeHtml(p.send || "")}">${escapeHtml(escCtl(p.send || "—"))}</td>`;
+    return `<tr>
+    <td>${kindTag}</td>
     <td class="mono">${escapeHtml(p.url)}</td>
-    <td><span class="tag tag-${p.protocol}">${(p.protocol || "tcp").toUpperCase()}</span></td>
+    <td>${method}</td>
     <td>${escapeHtml(p.job || "")}</td>
-    <td class="mono">${escapeHtml(p.timeout || "默认")}</td>
-    <td class="mono">${escapeHtml(p.read_timeout || "默认")}</td>
-    <td class="mono" title="${escapeHtml(p.send || "")}">${escapeHtml(escCtl(p.send || "—"))}</td>
-    <td class="mono" title="${escapeHtml(p.expect || "")}">${escapeHtml(escCtl(p.expect || "—"))}</td>
-  </tr>`).join("");
+    <td>${check}</td>
+    <td class="mono">${timeout}</td>
+    <td class="mono">${escapeHtml(p.interval || "默认")}</td>
+    ${send}
+  </tr>`;
+  }).join("");
   $("content").innerHTML = `<table>
     <thead><tr>
-      <th>目标地址</th><th>协议</th><th>名称</th><th>连接超时</th><th>读超时</th><th>发送内容</th><th>期望响应</th>
+      <th>类型</th><th>目标地址</th><th>方法/协议</th><th>名称</th><th>检查</th><th>超时</th><th>间隔</th><th>发送内容</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;

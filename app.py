@@ -136,6 +136,8 @@ class SiteIn(BaseModel):
     owner: str = Field(default="", max_length=100)
     env: Literal["生产环境", "测试环境"]  # 环境必填，且只允许生产环境/测试环境
     remark: str = Field(default="", max_length=500)
+    # 备忘录正文：仅 kind=备忘录 时使用，多行文本，不做监控、不参与拨测
+    memo_content: str = Field(default="", max_length=5000)
     monitor: bool = False
     # 拨测参数：留空用默认（状态码 200、GET、不设置超时）；状态码多个用 | 分隔，超时如 3s/500ms/1m（纯数字自动按秒）
     # 自定义探测地址：下拉三选一（域名/公网/内网），留空自动按 域名>公网>内网 取
@@ -255,6 +257,7 @@ FIELD_DEFAULTS = {
     "owner": "",
     "env": "",
     "remark": "",
+    "memo_content": "",
     "monitor": False,
     "probe_url": "",
     "probe_status_codes": "",
@@ -956,7 +959,7 @@ def _probe_job(site: dict) -> str:
 
 def _site_to_http_target(site: dict) -> dict | None:
     """站点 → HTTP 拨测目标（monitor=true 且有效地址才生成）"""
-    if not site.get("monitor"):
+    if (site.get("kind") or "") == "备忘录" or not site.get("monitor"):
         return None
     url = _pick_probe_url(site)
     if not url:
@@ -1068,7 +1071,7 @@ def _site_to_net_target(site: dict) -> dict | None:
     """站点 → 端口拨测目标（monitor=true 且无 URL 但有 connection 才生成）。
     从连接串提取 host:port；协议/超时/send/expect 走站点自己的拨测字段，
     所以端口拨测的配置全部在站点表单里完成，不再需要独立的端口拨测管理页。"""
-    if not site.get("monitor"):
+    if (site.get("kind") or "") == "备忘录" or not site.get("monitor"):
         return None
     # 有 URL 的站点走 HTTP 拨测，不在这里重复
     if _pick_probe_url(site):
@@ -1277,9 +1280,21 @@ def config_preview(authorization: str | None = Header(default=None)):
 
 @app.get("/api/probes")
 def list_probes(authorization: str | None = Header(default=None)):
-    """查看所有端口拨测目标"""
+    """查看所有端口拨测目标（仅独立拨测目标，不含站点派生目标）"""
     _require_admin(authorization)
     return _load_probes()
+
+
+@app.get("/api/probe-targets")
+def list_probe_targets(authorization: str | None = Header(default=None)):
+    """拨测目标总览（只读）：站点派生的 HTTP/端口目标 + 独立端口拨测目标。
+    给拨测管理页统一展示，与 categraf 实际拉取的配置一致。
+    独立 probe 目标（probes.json）没有 kind 字段，统一补为端口拨测。"""
+    _require_admin(authorization)
+    targets = _all_probe_targets()
+    for t in targets:
+        t.setdefault("kind", KIND_NET)
+    return targets
 
 
 def _site_net_addrs() -> dict[str, str]:
@@ -1590,7 +1605,17 @@ def create_site(site: SiteIn, authorization: str | None = Header(default=None)):
 
 def _validate_site_payload(data: dict) -> None:
     """校验创建/更新站点的最小字段：URL 或连接串至少填一个；勾选拨测必须有 URL 或连接串。
-    有 URL → HTTP 拨测（校验状态码/headers 等细粒度字段）；只有 connection → 端口拨测（不需 HTTP 字段）"""
+    有 URL → HTTP 拨测（校验状态码/headers 等细粒度字段）；只有 connection → 端口拨测（不需 HTTP 字段）。
+    备忘录（kind=备忘录）是纯文本展示介质：不需要 URL/连接串，且强制不拨测。"""
+    is_memo = (data.get("kind") or "") == "备忘录"
+    if is_memo:
+        # 备忘录不允许做任何拨测：即使误传入 monitor=true 也强制关掉
+        data["monitor"] = False
+        data["domain"] = data.get("domain") or ""
+        data["public_url"] = data.get("public_url") or ""
+        data["private_url"] = data.get("private_url") or ""
+        data["connection"] = data.get("connection") or ""
+        return
     if not any((data.get(k) or "").strip() for k in ("domain", "public_url", "private_url", "connection")):
         raise HTTPException(status_code=400, detail="域名/公网/内网/连接串至少填一个")
     # 连接串端口越界要在写入时拦住。否则记录落库后，urlparse().port 在生成
@@ -1733,8 +1758,9 @@ def _normalize_import_row(row: dict, idx: int) -> dict:
         for k, cn in (("domain", "域名"), ("public_url", "公网地址"), ("private_url", "内网地址"))
     ]
     connection = _blank_if_placeholder(str(row.get("connection") or row.get("连接串") or ""))
-    # URL 三字段和连接串至少填一个（非 URL 类资源允许只填连接串）
-    if not any(urls) and not connection:
+    is_memo = kind == "备忘录"
+    # URL 三字段和连接串至少填一个（非 URL 类资源允许只填连接串）；备忘录是纯文本展示介质，什么都不用填
+    if not is_memo and not any(urls) and not connection:
         raise ValueError(f"第{idx}行「{name}」域名/公网/内网/连接串至少填一个")
     result = {
         # 站点名称保持原样（不带后缀），同站点双环境靠 name 相同 + env 不同表达
@@ -1748,7 +1774,8 @@ def _normalize_import_row(row: dict, idx: int) -> dict:
         "owner": str(row.get("owner") or row.get("负责人") or "").strip(),
         "env": env,
         "remark": str(row.get("remark") or row.get("备注") or "").strip(),
-        "monitor": monitor,
+        "memo_content": str(row.get("memo_content") or row.get("备忘录内容") or "").strip(),
+        "monitor": False if is_memo else monitor,
         # 拨测参数：留空即默认（状态码 200、不设超时），与 _export_csv 的列一一对应
         "probe_status_codes": str(row.get("probe_status_codes") or row.get("拨测状态码") or "").strip(),
         "probe_timeout": str(row.get("probe_timeout") or row.get("拨测超时") or "").strip(),
@@ -1801,6 +1828,20 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
 
     # 解析 + 校验每行（SiteIn 模型保证字段合法性 + 长度 + URL 格式）
     parsed, skipped = [], []
+    # 字段(key) 与其 CSV 中文列名 / JSON 英文列名，用于判定"该列在源数据里是否显式填写"
+    _FIELD_ALIASES = [
+        ("name", "系统名称", "name"), ("kind", "资源类型", "kind"), ("category", "分类", "category"),
+        ("domain", "域名", "domain"), ("public_url", "公网地址", "public_url"), ("private_url", "内网地址", "private_url"),
+        ("connection", "连接串", "connection"), ("owner", "负责人", "owner"), ("env", "环境标识", "env"),
+        ("remark", "备注", "remark"), ("memo_content", "备忘录内容", "memo_content"), ("monitor", "拨测监控", "monitor"),
+        ("probe_status_codes", "拨测状态码", "probe_status_codes"), ("probe_timeout", "拨测超时", "probe_timeout"),
+        ("probe_interval", "探测间隔", "probe_interval"), ("probe_method", "拨测方法", "probe_method"),
+        ("probe_headers", "拨测请求头", "probe_headers"), ("probe_body", "拨测Body", "probe_body"),
+        ("probe_follow_redirects", "跟随重定向", "probe_follow_redirects"),
+        ("probe_insecure_skip_verify", "跳过证书校验", "probe_insecure_skip_verify"),
+        ("probe_tls_ca", "私有CA路径", "probe_tls_ca"),
+    ]
+
     for idx, raw_row in enumerate(rows, start=2):  # 从2开始：CSV 第1行是表头
         try:
             item_data = _normalize_import_row(raw_row, idx)
@@ -1829,7 +1870,16 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
             }).model_dump()
             # 与创建/更新路径同一条校验线：勾选拨测必须有 URL 或连接串，格式校验一致
             _validate_site_payload(validated)
-            parsed.append(validated)
+            # 判定"该列在源数据里是否显式填写"（用于增量更新：没填的列保持原值）。
+            # monitor 特殊对待：CSV 里「拨测监控」列留空算"没填"，
+            # 不能拿 _parse_bool 的结果（空→False）误当成显式关闭。
+            filled = set()
+            for key, cn, en in _FIELD_ALIASES:
+                # 取源列值：JSON 走英文列，CSV DictReader 走中文列（JSON 无中文列 → 取英文）
+                v = str(raw_row.get(en) or raw_row.get(cn) or "").strip()
+                if _blank_if_placeholder(v):
+                    filled.add(key)
+            parsed.append((validated, filled))
         except HTTPException as exc:
             skipped.append({"reason": f"第{idx}行：{exc.detail}"})
         except (ValueError, Exception) as exc:  # noqa: BLE001
@@ -1840,18 +1890,52 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
     # 不然 5000 行就是 5000 次读 probes.json
     probe_addrs = {(p.get("url") or "").strip().lower() for p in _load_probes()} - {""}
     added: list = []
+    updated: list = []
 
     def _mutate(sites):
         # 一次性建索引：不然每行查重都重新 norm URL + 解析连接串（5000 行 x 2000 条 = 55 秒）
         index = _build_dup_index(sites)
         now = _now()
-        for item_data in parsed:
+        for item_data, filled in parsed:
             # 走和创建/更新完全同一条查重线。原来这里另写一套字面比较，
             # 后果是 _find_duplicate 里的检查对导入路径全部失效：
             #   - 撞拨测页的独立端口目标（导入能塞进重复的 host:port）
             #   - 两个站点连接串写法不同但解析出同一 host:port（字面比拦不住）
             dup = _find_duplicate(sites, item_data, probe_addrs=probe_addrs, index=index)
             if dup:
+                if dup.startswith("同名同环境的"):
+                    # 同名同环境 = 明确指向同一张记录。增量更新：只覆盖 CSV/JSON 里
+                    # 显式填了的列（filled），没填的列保持原值（含 monitor，防止留空变关闭）。
+                    # 其他冲突（地址/连接串/端口被他人占用）指向的对象不确定，更新不安全，仍跳过。
+                    name = item_data["name"].strip().lower()
+                    env = (item_data.get("env") or "").strip()
+                    target = next(
+                        (s for s in sites if (s.get("name") or "").strip().lower() == name
+                         and (s.get("env") or "").strip() == env), None)
+                    if target is not None:
+                        # 先算出"应用 filled 字段后"的新值，与当前记录比较，
+                        # 没实际变化的不更新、也不计入 updated（避免"同名同环境但内容没变"误报更新）。
+                        changes = {}
+                        for k, v in item_data.items():
+                            if k in filled:
+                                cur = target.get(k)
+                                # probe_method 存默认空串/空 与 显式GET 在探测语义上等价，不视为变化
+                                if k == "probe_method" and cur in ("", "GET") and v in ("", "GET"):
+                                    continue
+                                if cur != v:
+                                    changes[k] = v
+                        if "monitor" in filled and "monitor" in item_data:
+                            if target.get("monitor") != item_data.get("monitor"):
+                                changes["monitor"] = item_data.get("monitor")
+                        if not changes:
+                            skipped.append({"reason": f"同名同环境的「{name}」内容未变化，保持不变"})
+                            continue
+                        for k, v in changes.items():
+                            target[k] = v
+                        target["updated_at"] = now
+                        index = _build_dup_index(sites)  # 字段变了，重建，避免后续行撞到过期索引
+                        updated.append(target)
+                        continue
                 skipped.append({"reason": f"{dup}，重复项已跳过"})
                 continue
             item = {
@@ -1867,15 +1951,18 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
     _load_mutate(_mutate)
 
     # monitor=true 的站点自动成为拨测目标，写站点即生效
-    return {"added": len(added), "skipped_count": len(skipped), "skipped": skipped[:20]}
+    return {
+        "added": len(added), "updated": len(updated),
+        "skipped_count": len(skipped), "skipped": skipped[:20],
+    }
 
 
 def _export_csv(sites: list) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    header_cn = ["系统名称", "资源类型", "分类", "域名", "公网地址", "内网地址", "连接串", "负责人", "环境标识", "备注", "拨测监控", "拨测状态码", "拨测超时", "探测间隔", "拨测方法", "拨测请求头", "拨测Body", "跟随重定向", "跳过证书校验", "私有CA路径"]
+    header_cn = ["系统名称", "资源类型", "分类", "域名", "公网地址", "内网地址", "连接串", "负责人", "环境标识", "备注", "备忘录内容", "拨测监控", "拨测状态码", "拨测超时", "探测间隔", "拨测方法", "拨测请求头", "拨测Body", "跟随重定向", "跳过证书校验", "私有CA路径"]
     writer.writerow(header_cn)
-    key_map = ["name", "kind", "category", "domain", "public_url", "private_url", "connection", "owner", "env", "remark", "monitor", "probe_status_codes", "probe_timeout", "probe_interval", "probe_method", "probe_headers", "probe_body", "probe_follow_redirects", "probe_insecure_skip_verify", "probe_tls_ca"]
+    key_map = ["name", "kind", "category", "domain", "public_url", "private_url", "connection", "owner", "env", "remark", "memo_content", "monitor", "probe_status_codes", "probe_timeout", "probe_interval", "probe_method", "probe_headers", "probe_body", "probe_follow_redirects", "probe_insecure_skip_verify", "probe_tls_ca"]
     for s in sites:
         row = []
         for k in key_map:
