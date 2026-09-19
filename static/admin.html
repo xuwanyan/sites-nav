@@ -140,12 +140,27 @@ function apiError(data, fallback) {
   return typeof d === "string" && d ? d : (fallback || "请求失败");
 }
 
-if (token) {
-  $("loggedInBox").style.display = "";
-  $("loginForm").style.display = "none";
-} else {
-  setTimeout(() => $("username").focus(), 100);
+function renderAuthUI(hasToken) {
+  $("loggedInBox").style.display = hasToken ? "" : "none";
+  $("loginForm").style.display = hasToken ? "none" : "";
 }
+
+async function checkToken() {
+  if (!token) { renderAuthUI(false); $("username").focus(); return; }
+  try {
+    // 用需登录的接口真实校验 token：有效才显示「已登录」，无效则清掉回登录表单，
+    // 避免「index 401 → admin 仍显已登录」的死循环。
+    await fetch("/api/monitor-status", { headers: { "Authorization": "Bearer " + token } });
+    renderAuthUI(true);
+  } catch {
+    localStorage.removeItem("nav_token");
+    localStorage.removeItem("nav_role");
+    token = "";
+    renderAuthUI(false);
+    $("username").focus();
+  }
+}
+checkToken();
 
 async function doLogin() {
   const username = $("username").value.trim();
