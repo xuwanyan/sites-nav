@@ -45,9 +45,11 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
   }
 
-  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; border: 1px solid #e8e8e8; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; background: #fff; border-radius: 10px; border: 1px solid #e8e8e8; }
   th, td { padding: 12px 14px; text-align: left; font-size: 13px; border-bottom: 1px solid #f0f0f0; }
-  th { background: #fafafa; font-weight: 600; color: #666; font-size: 12px; white-space: nowrap; }
+  :root { --hd-h: 63px; }
+  th { background: #fafafa; font-weight: 600; color: #666; font-size: 12px; white-space: nowrap; position: sticky; top: var(--hd-h); z-index: 5; }
+  thead th { box-shadow: 0 1px 0 #e8e8e8; }
   tr:hover td { background: #f9f9f9; }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
   .tag {
@@ -398,7 +400,7 @@ function renderProbes() {
   }).join("");
   $("content").innerHTML = `<table>
     <thead><tr>
-      <th>类型</th><th>目标地址</th><th>方法/协议</th><th>名称</th><th>检查</th><th>超时</th><th>间隔</th><th>发送内容</th>
+      <th>类型</th><th>目标地址</th><th>方法/协议</th><th>名称</th><th>检查</th><th>超时</th><th>检测间隔</th><th>发送内容</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
