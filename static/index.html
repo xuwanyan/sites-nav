@@ -1316,7 +1316,7 @@ function hasAnyUrl(s) {
 // 拨测状态徽标：写站点即生效，monitor=true 的站点自动成为拨测目标
 function probeBadge(s) {
   return s.monitor
-    ? `<span class="env-tag env-probe" title="${escapeAttr(probeTitle(s))}" id="probe-${escapeAttr(s.id)}">已监控</span>`
+    ? `<span class="env-tag env-probe" title="${escapeAttr(probeTitle(s))}" id="probe-${escapeAttr(s.id)}">📡 已监控 · ${escapeHtml(probeCfgLabel(s))}</span>`
     : `<span class="env-tag env-off">未加入监控</span>`;
 }
 
