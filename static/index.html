@@ -1608,7 +1608,7 @@ function copyText(text, btn) {
 
 // 全部复制：把当前所有站点/备忘录用「名称：地址」形式导出到剪贴板。
 // 地址顺序对齐卡片展示：域名 > 公网 > 内网 > 连接串，仅收集非空项；
-// 按名称分组的多环境站点，用「【生产环境/测试环境】」前缀区分同名项。
+// 按名称分组的多环境站点，用「-生产环境/-测试环境」后缀区分同名项，如「CIS-生产环境」。
 // 备忘录没有地址，输出正文首行。HTTP 非 HTTPS 下 navigator.clipboard 不可用，
 // 需走 execCommand 兜底，故不能只依赖 writeText。
 function copyAllLinks() {
@@ -1616,17 +1616,17 @@ function copyAllLinks() {
   const lines = sites.map(s => {
     const name = (s.name || "").trim();
     const env = (s.env || "").trim();
-    const tag = env ? `${env} ` : "";
+    const suff = env ? "-" + env : "";
     if ((s.kind || "") === "备忘录") {
       const first = ((s.memo_content || "").replace(/\r?\n.*/s, "") || "").trim();
-      return first ? `${tag}${name}：${first}` : `${tag}${name}`;
+      return first ? `${name}${suff}：${first}` : `${name}${suff}`;
     }
     const addrs = [
       (s.domain || "").trim(), (s.public_url || "").trim(),
       (s.private_url || "").trim(), (s.connection || "").trim(),
     ].filter(Boolean);
     const body = addrs.length ? addrs.join(" | ") : "— 未填写地址 —";
-    return `${tag}${name}：${body}`;
+    return `${name}${suff}：${body}`;
   }).join("\n");
   const btn = $("copyAllBtn");
   const done = ok => {
