@@ -1608,27 +1608,44 @@ function copyText(text, btn) {
 
 // 全部复制：把当前所有站点/备忘录用「名称：地址」形式导出到剪贴板。
 // 地址顺序对齐卡片展示：域名 > 公网 > 内网 > 连接串，仅收集非空项；
-// 备忘录没有地址，输出正文首行。与账号无关，普通用户可一键复制清单。
+// 按名称分组的多环境站点，用「【生产环境/测试环境】」前缀区分同名项。
+// 备忘录没有地址，输出正文首行。HTTP 非 HTTPS 下 navigator.clipboard 不可用，
+// 需走 execCommand 兜底，故不能只依赖 writeText。
 function copyAllLinks() {
   if (!sites.length) { showToast("暂无可复制的内容", "error"); return; }
   const lines = sites.map(s => {
     const name = (s.name || "").trim();
+    const env = (s.env || "").trim();
+    const tag = env ? `${env} ` : "";
     if ((s.kind || "") === "备忘录") {
       const first = ((s.memo_content || "").replace(/\r?\n.*/s, "") || "").trim();
-      return first ? `${name}：${first}` : name;
+      return first ? `${tag}${name}：${first}` : `${tag}${name}`;
     }
     const addrs = [
       (s.domain || "").trim(), (s.public_url || "").trim(),
       (s.private_url || "").trim(), (s.connection || "").trim(),
     ].filter(Boolean);
     const body = addrs.length ? addrs.join(" | ") : "— 未填写地址 —";
-    return `${name}：${body}`;
+    return `${tag}${name}：${body}`;
   }).join("\n");
   const btn = $("copyAllBtn");
-  navigator.clipboard.writeText(lines).then(() => {
-    showToast(`已复制 ${sites.length} 条`, "success");
+  const done = ok => {
+    showToast(ok ? `已复制 ${sites.length} 条` : "复制失败，请手动选择复制", ok ? "success" : "error");
     if (btn) { btn.textContent = "✓ 已复制"; setTimeout(() => btn.textContent = "🔗 全部复制", 1500); }
-  }).catch(() => showToast("复制失败，请手动选择复制", "error"));
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(lines).then(() => done(true)).catch(() => done(false));
+  } else {
+    const ta = document.createElement("textarea");
+    ta.value = lines;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); done(true); }
+    catch (e) { done(false); }
+    finally { document.body.removeChild(ta); }
+  }
 }
 
 // ==================== 运维登录 ====================
