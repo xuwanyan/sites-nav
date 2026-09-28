@@ -153,6 +153,7 @@ class SiteIn(BaseModel):
     probe_follow_redirects: bool | None = None  # None=用 categraf 默认；显式 true/false 才落盘
     probe_insecure_skip_verify: bool = False  # 跳过证书校验（与 tls_ca 互斥，跳过优先）
     probe_tls_ca: str = Field(default="", max_length=500)  # 私有 CA 证书路径（categraf 服务器本地路径）
+    probe_cert_expire: bool | None = None  # 是否采集证书过期时间（None/true=采集；false=该目标跳过 cert_expire 指标）
     # 端口拨测参数：只在「无 URL + 有 connection」时生效（有 URL 走 HTTP 拨测，这几个字段被忽略）
     probe_protocol: str = Field(default="tcp", pattern=r"^(tcp|udp)$")  # 协议
     probe_read_timeout: str = Field(default="", pattern=r"^(\d+(ms|s|m))?$")  # 只有 expect 时才有意义
@@ -269,6 +270,7 @@ FIELD_DEFAULTS = {
     "probe_follow_redirects": None,
     "probe_insecure_skip_verify": False,
     "probe_tls_ca": "",
+    "probe_cert_expire": None,
     "probe_protocol": "tcp",
     "probe_read_timeout": "",
     "probe_send": "",
@@ -983,6 +985,8 @@ def _site_to_http_target(site: dict) -> dict | None:
         "use_tls": skip_verify or bool(tls_ca),
         "tls_ca": tls_ca,
         "insecure_skip_verify": skip_verify,
+        # cert_expire: None/True=采集证书过期时间；False=该目标跳过 cert_expire 指标（TOML 单独成组 + metrics_drop）
+        "cert_expire": site.get("probe_cert_expire"),
     }
     if timeout:
         target["response_timeout"] = timeout
@@ -1787,6 +1791,7 @@ def _normalize_import_row(row: dict, idx: int) -> dict:
         "probe_follow_redirects": _parse_tri_bool(row.get("probe_follow_redirects") if "probe_follow_redirects" in row else row.get("跟随重定向")),
         "probe_insecure_skip_verify": _parse_bool(row.get("probe_insecure_skip_verify") if "probe_insecure_skip_verify" in row else row.get("跳过证书校验")),
         "probe_tls_ca": str(row.get("probe_tls_ca") or row.get("私有CA路径") or "").strip(),
+        "probe_cert_expire": _parse_tri_bool(row.get("probe_cert_expire") if "probe_cert_expire" in row else row.get("采集证书过期时间")),
     }
 
     # 表格占位符归一为空。不处理 name / env / monitor（有独立校验，不能变空）
@@ -1840,6 +1845,7 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
         ("probe_follow_redirects", "跟随重定向", "probe_follow_redirects"),
         ("probe_insecure_skip_verify", "跳过证书校验", "probe_insecure_skip_verify"),
         ("probe_tls_ca", "私有CA路径", "probe_tls_ca"),
+        ("probe_cert_expire", "采集证书过期时间", "probe_cert_expire"),
     ]
 
     for idx, raw_row in enumerate(rows, start=2):  # 从2开始：CSV 第1行是表头
@@ -1867,6 +1873,7 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
                 "probe_follow_redirects": item_data.get("probe_follow_redirects"),
                 "probe_insecure_skip_verify": item_data.get("probe_insecure_skip_verify", False),
                 "probe_tls_ca": item_data.get("probe_tls_ca", ""),
+                "probe_cert_expire": item_data.get("probe_cert_expire", None),
             }).model_dump()
             # 与创建/更新路径同一条校验线：勾选拨测必须有 URL 或连接串，格式校验一致
             _validate_site_payload(validated)
@@ -1960,9 +1967,9 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
 def _export_csv(sites: list) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    header_cn = ["系统名称", "资源类型", "分类", "域名", "公网地址", "内网地址", "连接串", "负责人", "环境标识", "备注", "备忘录内容", "拨测监控", "拨测状态码", "拨测超时", "探测间隔", "拨测方法", "拨测请求头", "拨测Body", "跟随重定向", "跳过证书校验", "私有CA路径"]
+    header_cn = ["系统名称", "资源类型", "分类", "域名", "公网地址", "内网地址", "连接串", "负责人", "环境标识", "备注", "备忘录内容", "拨测监控", "拨测状态码", "拨测超时", "探测间隔", "拨测方法", "拨测请求头", "拨测Body", "跟随重定向", "跳过证书校验", "私有CA路径", "采集证书过期时间"]
     writer.writerow(header_cn)
-    key_map = ["name", "kind", "category", "domain", "public_url", "private_url", "connection", "owner", "env", "remark", "memo_content", "monitor", "probe_status_codes", "probe_timeout", "probe_interval", "probe_method", "probe_headers", "probe_body", "probe_follow_redirects", "probe_insecure_skip_verify", "probe_tls_ca"]
+    key_map = ["name", "kind", "category", "domain", "public_url", "private_url", "connection", "owner", "env", "remark", "memo_content", "monitor", "probe_status_codes", "probe_timeout", "probe_interval", "probe_method", "probe_headers", "probe_body", "probe_follow_redirects", "probe_insecure_skip_verify", "probe_tls_ca", "probe_cert_expire"]
     for s in sites:
         row = []
         for k in key_map:

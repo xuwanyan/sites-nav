@@ -712,6 +712,12 @@
                 <span title="临时跳过证书校验（证书过期/自签名可用，不建议长期开启）">⚠️ 跳过证书校验</span>
               </label>
             </div>
+            <div class="form-group" style="min-width:auto; display:flex; align-items:center;">
+              <label style="display:flex; align-items:center; gap:6px; font-weight:400; cursor:pointer; margin:0;">
+                <input type="checkbox" id="f_probe_cert_expire" style="width:auto;">
+                <span title="默认采集证书过期时间；取消勾选则该网址不采集证书过期时间指标">采集证书过期时间</span>
+              </label>
+            </div>
             <div class="form-group">
               <label>TLS CA 证书路径（categraf 服务器本地路径，仅内网自建 CA 需要）</label>
               <input type="text" id="f_probe_tls_ca" maxlength="500" placeholder="/etc/categraf/ca.pem">
@@ -908,6 +914,12 @@
           <div class="form-group">
             <label>TLS CA 证书路径（categraf 服务器本地路径，仅内网自建 CA 需要）</label>
             <input type="text" id="probeTlsCa" maxlength="500" placeholder="/etc/categraf/ca.pem">
+          </div>
+          <div class="form-group">
+            <label style="display:flex; align-items:center; gap:6px; font-weight:400; cursor:pointer; margin:0;">
+              <input type="checkbox" id="probeCertExpire" style="width:auto;">
+              <span title="默认采集证书过期时间；取消勾选则该网址不采集证书过期时间指标">采集证书过期时间</span>
+            </label>
           </div>
         </div>
         </div>
@@ -1682,7 +1694,7 @@ function updateAdminUI() {
 }
 
 // ==================== 批量导入 / 导出 ====================
-const CSV_PLACEHOLDER = `系统名称,资源类型,分类,域名,公网地址,内网地址,连接串,负责人,环境标识,备注,备忘录内容,拨测监控,拨测状态码,拨测超时,拨测方法,拨测请求头,拨测Body,跟随重定向,跳过证书校验,私有CA路径
+const CSV_PLACEHOLDER = `系统名称,资源类型,分类,域名,公网地址,内网地址,连接串,负责人,环境标识,备注,备忘录内容,拨测监控,拨测状态码,拨测超时,拨测方法,拨测请求头,拨测Body,跟随重定向,跳过证书校验,私有CA路径,采集证书过期时间
 GitLab,网站,代码仓库,gitlab.company.com,https://git.company.com,http://10.0.0.10:8080,,张三,生产环境,SSO 登录,,是,200|301,3s,GET,"[""X-Custom-Token"",""abc123""]",,false,false,
 Redis-主库,缓存,中间件,,,,redis://10.0.1.5:6379/0,李四,生产环境,主从架构,,是,,,,,,,,
 上线注意事项,备忘录,运维,,,,,,,生产环境,,记得备份后发布且灰度,否,,,,,,,,`;
@@ -1871,6 +1883,7 @@ function openEditSite(btn) {
   $("f_probe_body").value = s.probe_body || "";
   $("f_probe_skip_verify").checked = !!s.probe_insecure_skip_verify;
   $("f_probe_tls_ca").value = s.probe_tls_ca || "";
+  $("f_probe_cert_expire").checked = s.probe_cert_expire !== false;
   toggleProbeSkip();
   $("f_remark").value = s.remark || "";
   $("f_memo_content").value = s.memo_content || "";
@@ -1935,6 +1948,8 @@ async function saveSite(btn) {
       probe_follow_redirects: $("f_probe_follow_redirects").value === "" ? null : $("f_probe_follow_redirects").value === "true",
       probe_insecure_skip_verify: $("f_probe_skip_verify").checked,
       probe_tls_ca: $("f_probe_tls_ca").value.trim(),
+      // 采集证书过期时间：勾选=采集(true)；取消=false（该网址跳过 cert_expire 指标）
+      probe_cert_expire: $("f_probe_cert_expire").checked ? true : false,
     };
     if (!data.name) { showToast("请输入名称", "error"); return; }
     if (!data.env) { showToast("请选择环境标识", "error"); return; }
@@ -2403,6 +2418,7 @@ function openProbeModal(btn) {
     $("probeBody").value = s.probe_body || "";
     $("probeSkipVerify").checked = !!s.probe_insecure_skip_verify;
     $("probeTlsCa").value = s.probe_tls_ca || "";
+    $("probeCertExpire").checked = s.probe_cert_expire !== false;
   }
   toggleProbeQuickSkip();
   updateProbeQuickTls();
@@ -2454,6 +2470,7 @@ async function confirmProbeJoin(btn) {
       overrides.probe_body = $("probeBody").value;
       overrides.probe_insecure_skip_verify = $("probeSkipVerify").checked;
       overrides.probe_tls_ca = $("probeTlsCa").value.trim();
+      overrides.probe_cert_expire = $("probeCertExpire").checked ? true : false;
     }
     await api(`/api/sites/${id}`, {
       method: "PUT",

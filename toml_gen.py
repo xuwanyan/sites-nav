@@ -48,6 +48,8 @@ def _http_profile_key(t: dict) -> str:
         "tls_ca": t.get("tls_ca", ""),
         "insecure_skip_verify": t.get("insecure_skip_verify", False),
         "follow_redirects": t.get("follow_redirects"),
+        # certify 过期时间：None/True=采集；False=跳过。只会拆出"跳过"那一组，其余合并
+        "cert_expire": t.get("cert_expire") is not False,
     }
     return json.dumps(profile, ensure_ascii=False, sort_keys=True)
 
@@ -116,6 +118,7 @@ def generate_http_toml(targets: list[dict]) -> str:
                     "tls_ca": t.get("tls_ca", ""),
                     "insecure_skip_verify": t.get("insecure_skip_verify", False),
                     "follow_redirects": t.get("follow_redirects"),
+                    "cert_expire": t.get("cert_expire") is not False,
                 },
                 "urls": [],
             }
@@ -201,6 +204,10 @@ def _emit_http_instance(lines: list[str], urls: list[str], p: dict) -> None:
             lines.append(f'tls_ca = {_toml_quote(p["tls_ca"])}')
         if p["insecure_skip_verify"]:
             lines.append("insecure_skip_verify = true")
+
+    # 不采集证书过期时间：该 instance 整组 drop 掉 cert_expire 指标（仅"跳过"目标单独成组时才有此配置）
+    if p.get("cert_expire") is False:
+        lines.append('metrics_drop = ["*cert_expire_timestamp"]')
 
 
 # ── 生成 net_response.toml ──
