@@ -767,11 +767,11 @@
         </div>
         <div class="form-group">
           <label>超时时长</label>
-          <input type="text" id="f_probe_timeout" placeholder="如 3s / 500ms，纯数字按秒，留空不设置">
+          <input type="text" id="f_probe_timeout" placeholder="如 3s / 500ms，纯数字按秒，留空用默认 3s（端口拨测 1s）">
         </div>
         <div class="form-group" style="max-width:150px;">
           <label>探测间隔</label>
-          <input type="text" id="f_probe_interval" placeholder="如 30s / 500ms / 1m，留空用全局默认">
+          <input type="text" id="f_probe_interval" placeholder="如 30s / 500ms / 1m，留空用全局默认 15s" title="留空则不写进 TOML，由 categraf 全局 interval 决定（默认 15s，以 categraf conf/config.toml 里的值为准）">
         </div>
       </div>
       <!-- 端口拨测高级：发送与响应匹配（对齐原 categraf-http-admin） -->
@@ -957,7 +957,7 @@
           </div>
           <div class="form-group" style="max-width:150px;">
             <label>探测间隔</label>
-            <input type="text" id="probeInterval" placeholder="如 30s / 500ms / 1m，留空用全局默认" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
+            <input type="text" id="probeInterval" placeholder="如 30s / 500ms / 1m，留空用全局默认 15s" title="留空则不写进 TOML，由 categraf 全局 interval 决定（默认 15s，以 categraf conf/config.toml 里的值为准）" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
           </div>
         </div>
         <div id="probeQuickUdpHint" style="display:none;font-size:12px;color:#cf1322;margin:8px 0 2px"><svg class="ic"><use href="#i-alert"/></svg> UDP 无连接：不配置下方「发送与响应匹配」时判活不可靠，强烈建议配置</div>
@@ -992,11 +992,11 @@
         </div>
         <div class="form-group">
           <label>超时时长</label>
-          <input type="text" id="probeTimeout" placeholder="3 = 3秒，也可填 3s/500ms" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
+          <input type="text" id="probeTimeout" placeholder="3 = 3秒，也可填 3s/500ms，留空用默认 3s" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
         </div>
         <div class="form-group" style="max-width:150px;">
           <label>探测间隔</label>
-          <input type="text" id="probeTimeoutInterval" placeholder="如 30s / 500ms / 1m，留空用全局默认" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
+          <input type="text" id="probeTimeoutInterval" placeholder="如 30s / 500ms / 1m，留空用全局默认 15s" title="留空则不写进 TOML，由 categraf 全局 interval 决定（默认 15s，以 categraf conf/config.toml 里的值为准）" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
         </div>
         <div class="form-group" style="max-width:130px;">
           <label>请求方法</label>
