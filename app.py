@@ -141,7 +141,9 @@ class SiteIn(BaseModel):
     monitor: bool = False
     # 拨测参数：留空用默认（状态码 200、GET、不设置超时）；状态码多个用 | 分隔，超时如 3s/500ms/1m（纯数字自动按秒）
     # 自定义探测地址：下拉三选一（域名/公网/内网），留空自动按 域名>公网>内网 取
-    probe_url: str = Field(default="", max_length=500)
+    # None = 未提供。站点编辑表单不展示这个字段、保存时也不会带上它：
+    # 若这里默认 "" 会让 update 把已有值清掉（编辑一次丢一次探测地址）。
+    probe_url: str | None = Field(default=None, max_length=500)
     probe_status_codes: str = Field(default="", pattern=r"^(\d{3}(\|\d{3})*)?$")
     probe_timeout: str = Field(default="", pattern=r"^(\d+(ms|s|m))?$")
     # 探测间隔：留空用 categraf 全局默认；如 30s/500ms/1m（纯数字自动按秒）
@@ -1586,6 +1588,8 @@ def create_site(site: SiteIn, authorization: str | None = Header(default=None)):
     # 站点名称保持用户填写的原样（不带后缀），按 name + env 聚合双环境
     data = site.model_dump()
     data["name"] = (data.get("name") or "").strip()
+    # probe_url 未提供（None）时按空串落库（新建本就没有旧值可保留）
+    data["probe_url"] = (data.get("probe_url") or "").strip()
     _validate_site_payload(data)
     now = _now()
     item = {
@@ -1661,6 +1665,10 @@ def update_site(site_id: str, site: SiteIn, authorization: str | None = Header(d
         raise HTTPException(status_code=404, detail="条目不存在")
     data = site.model_dump()
     data["name"] = (data.get("name") or "").strip()
+    # probe_url 未提供（None）时保留旧值：站点编辑表单不展示该字段，
+    # 不在这里兜底的话任何一次编辑保存都会把已有探测地址清成空
+    if data.get("probe_url") is None:
+        data.pop("probe_url")
     _validate_site_payload(data)
 
     captured: dict = {}
@@ -1875,6 +1883,9 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
                 "probe_tls_ca": item_data.get("probe_tls_ca", ""),
                 "probe_cert_expire": item_data.get("probe_cert_expire", None),
             }).model_dump()
+            # probe_url 在 SiteIn 里是 None=未提供（站点编辑表单不带这个字段）。
+            # 导入也没有这一列，这里统一落成空串，避免 sites.json 里 ""/null 混用
+            validated["probe_url"] = ""
             # 与创建/更新路径同一条校验线：勾选拨测必须有 URL 或连接串，格式校验一致
             _validate_site_payload(validated)
             # 判定"该列在源数据里是否显式填写"（用于增量更新：没填的列保持原值）。
