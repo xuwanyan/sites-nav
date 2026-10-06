@@ -8,17 +8,33 @@
 <meta name="theme-color" content="#1677ff">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  /* ── 设计令牌：全站颜色/圆角/阴影/字号统一从这里取，避免魔法数字散落 ── */
+  :root {
+    --c-primary: #1677ff; --c-primary-hover: #4096ff; --c-primary-bg: #e6f4ff;
+    --c-text: #1a1a1a; --c-text-2: #595959; --c-text-3: #8c8c8c; --c-text-4: #bfbfbf;
+    --c-border: #e8e8e8; --c-border-2: #f0f0f0; --c-bg: #f0f2f5; --c-surface: #fff;
+    --c-prod: #cf1322; --c-prod-bg: #fff1f0; --c-test: #389e0d; --c-test-bg: #f6ffed;
+    --r-xs: 4px; --r-sm: 6px; --r-md: 8px; --r-lg: 10px; --r-xl: 12px; --r-pill: 999px;
+    --sh-1: 0 1px 4px rgba(0,0,0,.04);
+    --sh-2: 0 4px 16px rgba(0,0,0,.08);
+    --sh-3: 0 8px 32px rgba(0,0,0,.15);
+    --ease: cubic-bezier(.4,0,.2,1);
+  }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-    background: #f0f2f5;
-    color: #333;
+    background: var(--c-bg);
+    color: var(--c-text-2);
     min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
   }
+  /* SVG 图标基类：与文字同色、1.5 描边、垂直对齐 */
+  .ic { width: 1em; height: 1em; flex-shrink: 0; vertical-align: -.125em; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .ic-lg { width: 1.25em; height: 1.25em; }
 
   /* 顶部导航 */
   .header {
-    background: #fff;
-    border-bottom: 1px solid #e8e8e8;
+    background: var(--c-surface);
+    border-bottom: 1px solid var(--c-border);
     padding: 16px 32px;
     display: flex;
     align-items: center;
@@ -26,7 +42,7 @@
     position: sticky;
     top: 0;
     z-index: 100;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+    box-shadow: var(--sh-1);
   }
   .header h1 {
     font-size: 20px;
@@ -50,24 +66,50 @@
   }
   .search-box input:focus { border-color: #1677ff; box-shadow: 0 0 0 2px rgba(22,119,255,0.1); }
   .search-box::before {
-    content: "🔍";
+    content: "";
     position: absolute;
     left: 12px;
     top: 50%;
     transform: translateY(-50%);
-    font-size: 14px;
-    opacity: 0.5;
+    width: 16px; height: 16px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238c8c8c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m21 21-4.3-4.3'/%3E%3C/svg%3E") no-repeat center / contain;
+    opacity: .55;
+    pointer-events: none;
   }
   .header-actions { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+  /* 「管理 ▾」下拉菜单 */
+  .menu-wrap { position: relative; display: inline-flex; }
+  .menu-pop {
+    position: absolute; top: calc(100% + 6px); right: 0;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--r-md); box-shadow: var(--sh-2);
+    min-width: 168px; padding: 4px; z-index: 200;
+    display: none;
+  }
+  .menu-pop.open { display: block; animation: menuIn .15s var(--ease); }
+  @keyframes menuIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+  .menu-item {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 8px 10px; border: none; background: none; color: var(--c-text-2);
+    font-size: 14px; cursor: pointer; border-radius: var(--r-sm);
+    text-decoration: none; transition: background .15s, color .15s; font-weight: 500;
+  }
+  .menu-item:hover { background: var(--c-primary-bg); color: var(--c-primary); }
+  .menu-item.danger:hover { background: var(--c-prod-bg); color: var(--c-prod); }
+  .menu-sep { height: 1px; background: var(--c-border-2); margin: 4px 0; }
   .btn {
     padding: 8px 16px;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     font-size: 14px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: all .2s var(--ease);
     font-weight: 500;
-    text-decoration: none;   /* 导航按钮用 <a>（拨测管理新标签页打开），去掉默认下划线 */
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    line-height: 1.4;
   }
   .btn-primary { background: #1677ff; color: #fff; }
   .btn-primary:hover { background: #4096ff; }
@@ -120,24 +162,25 @@
   }
   .cat-tag {
     padding: 6px 14px;
-    background: #fff;
-    border: 1px solid #e8e8e8;
-    border-radius: 16px;
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-pill);
     font-size: 13px;
-    color: #595959;
+    color: var(--c-text-2);
     cursor: pointer;
-    transition: all 0.2s;
+    transition: all .2s var(--ease);
     user-select: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
-  .cat-tag:hover { border-color: #bfbfbf; color: #1f1f1f; }
-  /* 选中态一律「浅底 + 同色字」，不用高饱和填充，避免整屏花 */
-  .cat-tag.active { background: #e6f4ff; color: #0958d9; border-color: #91caff; }
-  .cat-tag.tag-prod.active { background: #fff1f0; color: #cf1322; border-color: #ffccc7; }
-  .cat-tag.tag-test.active { background: #f6ffed; color: #389e0d; border-color: #b7eb8f; }
-  .cat-tag.tag-http.active { background: #e6fffb; color: #08979c; border-color: #87e8de; }
-  .cat-tag.tag-net.active { background: #f9f0ff; color: #722ed1; border-color: #d3adf7; }
-  .cat-tag.tag-mon.active { background: #f6ffed; color: #389e0d; border-color: #b7eb8f; }
-  .cat-tag.tag-unmon.active { background: #f5f5f5; color: #595959; border-color: #d9d9d9; }
+  .cat-tag:hover { border-color: #bfbfbf; color: var(--c-text); }
+  /* 协议/状态筛选中性化降噪：选中统一蓝；仅环境 prod/test 保留语义色 */
+  .cat-tag.active { background: var(--c-primary-bg); color: var(--c-primary); border-color: #91caff; font-weight: 600; }
+  .cat-tag.tag-prod.active { background: var(--c-prod-bg); color: var(--c-prod); border-color: #ffccc7; }
+  .cat-tag.tag-test.active { background: var(--c-test-bg); color: var(--c-test); border-color: #b7eb8f; }
+  .ic-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .bar-sep { display: inline-block; width: 1px; height: 18px; background: var(--c-border); margin: 0 6px; vertical-align: middle; }
   /* 计数为 0 的协议项置灰不可点；已选中时不置灰 */
   .cat-tag.tag-dim:not(.active) { opacity: .45; cursor: not-allowed; }
 
@@ -259,15 +302,15 @@
 
   /* 卡片 */
   .card {
-    background: #fff;
-    border-radius: 10px;
+    background: var(--c-surface);
+    border-radius: var(--r-xl);
     padding: 18px;
-    border: 1px solid #e8e8e8;
-    transition: all 0.25s;
+    border: 1px solid var(--c-border);
+    transition: box-shadow .25s var(--ease), transform .25s var(--ease), border-color .25s var(--ease);
     position: relative;
   }
   .card:hover {
-    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+    box-shadow: var(--sh-2);
     transform: translateY(-2px);
     border-color: #d0d0d0;
   }
@@ -381,26 +424,33 @@
     flex-shrink: 0;
   }
 
-  /* 模态框 */
+  /* 模态框：用 opacity/visibility 切换以支持过渡（display 不可过渡） */
   .modal-overlay {
-    display: none;
     position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.45);
+    inset: 0;
+    background: rgba(0,0,0,.45);
     z-index: 1000;
+    display: flex;
     justify-content: center;
     align-items: center;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity .2s var(--ease), visibility .2s var(--ease);
   }
-  .modal-overlay.show { display: flex; }
+  .modal-overlay.show { opacity: 1; visibility: visible; pointer-events: auto; }
   .modal {
-    background: #fff;
-    border-radius: 12px;
+    background: var(--c-surface);
+    border-radius: var(--r-xl);
     width: 90%;
     max-width: 560px;
     max-height: 90vh;
     overflow-y: auto;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+    box-shadow: var(--sh-3);
+    transform: scale(.96) translateY(8px);
+    transition: transform .22s var(--ease);
   }
+  .modal-overlay.show .modal { transform: scale(1) translateY(0); }
   .modal-header {
     padding: 20px 24px;
     border-bottom: 1px solid #f0f0f0;
@@ -459,24 +509,34 @@
   }
   .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
 
-  /* Toast */
+  /* Toast：浅底 + 彩边 + 深字（与 probes.html 一致），滑入动效 */
   .toast {
     position: fixed;
     top: 24px;
     left: 50%;
-    transform: translateX(-50%);
-    padding: 12px 24px;
-    border-radius: 8px;
-    color: #fff;
+    transform: translateX(-50%) translateY(-8px);
+    padding: 11px 20px;
+    border-radius: var(--r-md);
     font-size: 14px;
     z-index: 2000;
     opacity: 0;
-    transition: opacity 0.3s;
+    transition: opacity .25s var(--ease), transform .25s var(--ease);
     pointer-events: none;
+    box-shadow: var(--sh-2);
+    border: 1px solid transparent;
+    font-weight: 500;
   }
-  .toast.show { opacity: 1; }
-  .toast.success { background: #52c41a; }
-  .toast.error { background: #ff4d4f; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.success { background: var(--c-test-bg); border-color: #b7eb8f; color: var(--c-test); }
+  .toast.error { background: var(--c-prod-bg); border-color: #ffccc7; color: var(--c-prod); }
+
+  /* 焦点态：键盘导航时显形（鼠标点击不触发，避免视觉噪声） */
+  .btn:focus-visible, .cat-tag:focus-visible, .cat-item:focus-visible,
+  .copy-btn:focus-visible, .group-toggle:focus-visible, .copy-group-btn:focus-visible,
+  .modal-close:focus-visible, a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--c-primary);
+    outline-offset: 2px;
+  }
 
   /* 响应式 */
   @media (max-width: 900px) {
@@ -503,21 +563,67 @@
 </head>
 <body>
 
+<!-- SVG 图标 sprite：隐藏定义，用 <use href="#i-xxx"/> 引用。集中管理，描边/颜色由 .ic 类继承 -->
+<svg style="display:none" aria-hidden="true">
+  <symbol id="i-building" viewBox="0 0 24 24"><path d="M3 21h18"/><path d="M5 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16"/><path d="M15 21V9h2a2 2 0 0 1 2 2v10"/><path d="M9 7h2M9 11h2M9 15h2"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></symbol>
+  <symbol id="i-radar" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 12 19 7"/><path d="M12 12a7 7 0 0 1 7-5"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2 21a7 7 0 0 1 14 0"/><path d="M16 5a3.5 3.5 0 0 1 0 7"/><path d="M18 21a7 7 0 0 0-3-5.7"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14"/><path d="M10 11v6M14 11v6"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18Z"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 2v6M15 2v6"/><path d="M7 8h10v3a5 5 0 0 1-10 0Z"/><path d="M12 16v6"/></symbol>
+  <symbol id="i-note" viewBox="0 0 24 24"><path d="M5 3h11l4 4v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M16 3v4h4"/><path d="M8 12h8M8 16h5"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7Z"/></symbol>
+  <symbol id="i-message" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></symbol>
+  <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M6 18a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.3A4.5 4.5 0 0 1 18 18Z"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24"><path d="M3 7 12 3l9 4v10l-9 4-9-4Z"/><path d="m3 7 9 4 9-4M12 11v10"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5Z"/><path d="m3 13 9 5 9-5"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M3 5h18l-7 8v6l-4-2v-4Z"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M3 13 6 4h12l3 9"/><path d="M3 13h5l2 3h4l2-3h5v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 20h20Z"/><path d="M12 10v4M12 17.5v.5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5L20 6"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-chev-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-chev-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M6 3h8l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M8 13h8M8 17h6"/></symbol>
+  <symbol id="i-receipt" viewBox="0 0 24 24"><path d="M6 2h12v20l-3-2-3 2-3-2-3 2Z"/><path d="M9 7h6M9 11h6M9 15h3"/></symbol>
+  <symbol id="i-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5a7 7 0 0 0 7 7 7 7 0 0 0 7-7V6Z"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A8 8 0 1 1 11.2 3 6 6 0 0 0 21 12.8Z"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 12 5 5 5-5"/><path d="M5 21h14"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 21V9"/><path d="m7 12 5-5 5 5"/><path d="M5 21h14"/></symbol>
+</svg>
+
 <!-- 顶部导航 -->
 <div class="header">
-  <h1>🏢 公司常用网站导航</h1>
+  <h1><svg class="ic ic-lg" style="color:var(--c-primary)"><use href="#i-building"/></svg> 公司常用网站导航</h1>
   <div class="search-box">
     <input type="text" id="searchInput" placeholder="搜索系统名称、地址、域名..." oninput="renderSites()">
   </div>
   <div class="header-actions">
     <span id="adminBadge" class="admin-badge" style="display:none;">运维模式</span>
-    <button id="addBtn" class="btn btn-primary" style="display:none;" onclick="openSiteModal()">+ 新增网站</button>
-    <button id="importBtn" class="btn btn-default" style="display:none;" onclick="openImportModal()">批量导入</button>
-    <button id="copyAllBtn" class="btn btn-default" onclick="copyAllLinks()">🔗 全部复制</button>
-    <button id="exportBtn" class="btn btn-default" style="display:none;" onclick="openExportModal()">导出</button>
-    <a id="probesBtn" class="btn btn-default" style="display:none;" href="/probes" target="_blank" rel="noopener">📡 拨测管理</a>
-    <button id="usersBtn" class="btn btn-default" style="display:none;" onclick="openUsersModal()">👤 用户管理</button>
-    <button id="logoutBtn" class="btn btn-default" style="display:none;" onclick="logout()">退出登录</button>
+    <button id="addBtn" class="btn btn-primary" style="display:none;" onclick="openSiteModal()"><svg class="ic"><use href="#i-plus"/></svg> 新增网站</button>
+    <button id="importBtn" class="btn btn-default" style="display:none;" onclick="openImportModal()"><svg class="ic"><use href="#i-upload"/></svg> 批量导入</button>
+    <button id="copyAllBtn" class="btn btn-default" onclick="copyAllLinks()"><svg class="ic"><use href="#i-link"/></svg> 全部复制</button>
+    <div class="menu-wrap" id="adminMenuWrap" style="display:none;">
+      <button class="btn btn-default" id="adminMenuBtn" onclick="toggleAdminMenu(event)" aria-haspopup="true" aria-expanded="false"><svg class="ic"><use href="#i-settings"/></svg> 管理 <svg class="ic"><use href="#i-chev-down"/></svg></button>
+      <div class="menu-pop" id="adminMenuPop" role="menu">
+        <a class="menu-item" id="probesBtn" href="/probes" target="_blank" rel="noopener" role="menuitem"><svg class="ic"><use href="#i-radar"/></svg> 拨测管理</a>
+        <button class="menu-item" id="usersBtn" onclick="closeAdminMenu();openUsersModal()" role="menuitem"><svg class="ic"><use href="#i-users"/></svg> 用户管理</button>
+        <button class="menu-item" id="exportBtn" onclick="closeAdminMenu();openExportModal()" role="menuitem"><svg class="ic"><use href="#i-download"/></svg> 导出数据</button>
+      </div>
+    </div>
+    <button id="logoutBtn" class="btn btn-default" style="display:none;" onclick="logout()"><svg class="ic"><use href="#i-logout"/></svg> 退出</button>
   </div>
 </div>
 
@@ -529,7 +635,7 @@
 
   <!-- 左侧分类目录（布局A）：点分类即过滤右侧网格 -->
   <aside class="sidebar">
-    <h3>📂 分类目录</h3>
+    <h3><svg class="ic"><use href="#i-folder"/></svg> 分类目录</h3>
     <div id="categoryBar"></div>
   </aside>
 
@@ -537,7 +643,7 @@
   <div class="main-area">
     <div class="env-bar-wrap">
       <div class="category-bar" id="envBar" style="padding:0;"></div>
-      <span class="group-toggle" id="groupToggle" onclick="toggleGroupMode()" title="切换：同站点名合并为一张分组卡 / 拆开独立卡片">🔗 分组卡</span>
+      <span class="group-toggle" id="groupToggle" onclick="toggleGroupMode()" title="切换：同站点名合并为一张分组卡 / 拆开独立卡片"><svg class="ic"><use href="#i-link"/></svg> 分组卡</span>
     </div>
     <div class="container" id="container"></div>
   </div>
@@ -557,9 +663,9 @@
       <div class="form-group">
         <label>资源类型 <span class="required">*</span></label>
         <select id="f_kind" onchange="onKindChange()">
-          <option value="网站">🌐 网站</option>
-          <option value="非网站">🔌 非网站</option>
-          <option value="备忘录">📝 备忘录</option>
+          <option value="网站">网站</option>
+          <option value="非网站">非网站</option>
+          <option value="备忘录">备忘录</option>
         </select>
         <div style="font-size:11px; color:#8c8c8c; margin-top:4px;">网站填 URL 地址走 HTTP 拨测；非网站填连接串走 TCP/UDP 端口拨测；备忘录仅展示文本、不做监控</div>
       </div>
@@ -649,9 +755,9 @@
       </div>
       <!-- 端口拨测高级：发送与响应匹配（对齐原 categraf-http-admin） -->
       <div id="probeNetAdvBlock" style="display:none; margin-top:4px;">
-        <div id="probeUdpHint" style="display:none;font-size:12px;color:#cf1322;margin-bottom:8px">⚠️ UDP 无连接：不配置下方「发送与响应匹配」时判活不可靠，强烈建议配置</div>
+        <div id="probeUdpHint" style="display:none;font-size:12px;color:#cf1322;margin-bottom:8px"><svg class="ic"><use href="#i-alert"/></svg> UDP 无连接：不配置下方「发送与响应匹配」时判活不可靠，强烈建议配置</div>
         <div style="margin-top:4px">
-          <a href="javascript:void(0)" id="probeNetAdvToggle" onclick="toggleProbeNetAdv()" style="font-size:12px;color:#1677ff;text-decoration:none">▸ 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）</a>
+          <a href="javascript:void(0)" id="probeNetAdvToggle" onclick="toggleProbeNetAdv()" style="font-size:12px;color:#1677ff;text-decoration:none"><svg class="ic"><use href="#i-chev-right"/></svg> 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）</a>
         </div>
         <div class="form-row" id="probeNetAdvGroup" style="display:none;margin-top:8px;">
           <div class="form-group">
@@ -705,7 +811,7 @@
             <div class="form-group" style="min-width:auto; display:flex; align-items:center;">
               <label style="display:flex; align-items:center; gap:6px; font-weight:400; cursor:pointer; margin:0;">
                 <input type="checkbox" id="f_probe_skip_verify" style="width:auto;" onchange="toggleProbeSkip()">
-                <span title="临时跳过证书校验（证书过期/自签名可用，不建议长期开启）">⚠️ 跳过证书校验</span>
+                <span title="临时跳过证书校验（证书过期/自签名可用，不建议长期开启）"><svg class="ic"><use href="#i-alert"/></svg> 跳过证书校验</span>
               </label>
             </div>
             <div class="form-group" style="min-width:auto; display:flex; align-items:center;">
@@ -775,8 +881,8 @@
     </div>
     <div class="modal-body">
       <div style="display:flex; gap:12px;">
-        <button class="btn btn-default" style="flex:1; padding:16px;" onclick="doExport('csv')">📄 CSV（Excel 可直接打开）</button>
-        <button class="btn btn-default" style="flex:1; padding:16px;" onclick="doExport('json')">🧾 JSON（可再导入）</button>
+        <button class="btn btn-default" style="flex:1; padding:16px;" onclick="doExport('csv')"><svg class="ic"><use href="#i-file"/></svg> CSV（Excel 可直接打开）</button>
+        <button class="btn btn-default" style="flex:1; padding:16px;" onclick="doExport('json')"><svg class="ic"><use href="#i-receipt"/></svg> JSON（可再导入）</button>
       </div>
     </div>
   </div>
@@ -833,9 +939,9 @@
             <input type="text" id="probeInterval" placeholder="如 30s / 500ms / 1m，留空用全局默认" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
           </div>
         </div>
-        <div id="probeQuickUdpHint" style="display:none;font-size:12px;color:#cf1322;margin:8px 0 2px">⚠️ UDP 无连接：不配置下方「发送与响应匹配」时判活不可靠，强烈建议配置</div>
+        <div id="probeQuickUdpHint" style="display:none;font-size:12px;color:#cf1322;margin:8px 0 2px"><svg class="ic"><use href="#i-alert"/></svg> UDP 无连接：不配置下方「发送与响应匹配」时判活不可靠，强烈建议配置</div>
         <div style="margin-top:6px">
-          <a href="javascript:void(0)" id="probeQuickAdvToggle" onclick="toggleProbeQuickNetAdv()" style="font-size:12px;color:#1677ff;text-decoration:none">▸ 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）</a>
+          <a href="javascript:void(0)" id="probeQuickAdvToggle" onclick="toggleProbeQuickNetAdv()" style="font-size:12px;color:#1677ff;text-decoration:none"><svg class="ic"><use href="#i-chev-right"/></svg> 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）</a>
         </div>
         <div class="form-row" id="probeQuickNetAdvGroup" style="display:none;margin-top:8px;">
           <div class="form-group">
@@ -904,7 +1010,7 @@
           <div class="form-group" style="min-width:auto; display:flex; align-items:center;">
             <label style="display:flex; align-items:center; gap:6px; font-weight:400; cursor:pointer; margin:0;">
               <input type="checkbox" id="probeSkipVerify" style="width:auto;" onchange="toggleProbeQuickSkip()">
-              <span title="临时跳过证书校验（证书过期/自签名可用，不建议长期开启）">⚠️ 跳过证书校验</span>
+              <span title="临时跳过证书校验（证书过期/自签名可用，不建议长期开启）"><svg class="ic"><use href="#i-alert"/></svg> 跳过证书校验</span>
             </label>
           </div>
           <div class="form-group">
@@ -933,7 +1039,7 @@
 <div class="modal-overlay" id="usersModal">
   <div class="modal" style="max-width:680px;">
     <div class="modal-header">
-      <h3>👤 用户管理</h3>
+      <h3><svg class="ic"><use href="#i-users"/></svg> 用户管理</h3>
       <button class="modal-close" onclick="closeUsersModal()">&times;</button>
     </div>
     <div class="modal-body">
@@ -1024,28 +1130,33 @@ async function loadMonitorConfig() {
   const reason = cfg.reason || "拨测配置异常";
   box.className = "monitor-warn";
   box.style.display = "flex";
-  box.innerHTML = `<span class="mw-icon">⚠️</span><span><b>拨测未生效：</b>${escapeHtml(reason)}。`
+  box.innerHTML = `<span class="mw-icon" style="color:var(--c-prod)">${icon("alert")}</span><span><b>拨测未生效：</b>${escapeHtml(reason)}。`
     + `已勾选「加入监控」的站点目前不会产生任何拨测目标，修好配置后 categraf 会自动拉到。</span>`;
+}
+
+// SVG 图标引用：返回内联 <svg>，描边/颜色由 .ic 类继承；图标为装饰性，文字承担语义
+function icon(name, cls) {
+  return `<svg class="ic${cls ? " " + cls : ""}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 }
 
 // 资源类型元数据：预设类型带图标和颜色，自定义类型走哈希兜底
 const KIND_META = {
-  "网站":     { color: "#1677ff", icon: "🌐", placeholder: "http://gitlab.company.com",            hint: "URL 形式，可带端口或路径" },
-  "缓存":     { color: "#fa8c16", icon: "⚡", placeholder: "redis://10.0.1.5:6379/0",             hint: "推荐 redis://host:port/db 或 host:port 形式" },
-  "消息队列": { color: "#722ed1", icon: "📨", placeholder: "10.0.3.4:9092",                        hint: "Kafka 填 bootstrap_servers；RabbitMQ 用 amqp://user:pwd@host:port" },
-  "数据库":   { color: "#13c2c2", icon: "🗄️", placeholder: "mysql://user:pwd@10.0.4.5:3306/orders", hint: "推荐 mysql:// / postgres:// 形式；密码敏感建议只在内网可见环境暴露" },
-  "存储":     { color: "#52c41a", icon: "☁️", placeholder: "oss-cn-hangzhou.aliyuncs.com/my-bucket", hint: "如 OSS/S3 endpoint + bucket 名" },
-  "备忘录":   { color: "#8c8c8c", icon: "📝", placeholder: "", hint: "仅展示文本，不做监控" },
+  "网站":     { color: "#1677ff", icon: icon("globe"),     placeholder: "http://gitlab.company.com",            hint: "URL 形式，可带端口或路径" },
+  "缓存":     { color: "#fa8c16", icon: icon("bolt"),      placeholder: "redis://10.0.1.5:6379/0",             hint: "推荐 redis://host:port/db 或 host:port 形式" },
+  "消息队列": { color: "#722ed1", icon: icon("message"),   placeholder: "10.0.3.4:9092",                        hint: "Kafka 填 bootstrap_servers；RabbitMQ 用 amqp://user:pwd@host:port" },
+  "数据库":   { color: "#13c2c2", icon: icon("database"),  placeholder: "mysql://user:pwd@10.0.4.5:3306/orders", hint: "推荐 mysql:// / postgres:// 形式；密码敏感建议只在内网可见环境暴露" },
+  "存储":     { color: "#52c41a", icon: icon("cloud"),     placeholder: "oss-cn-hangzhou.aliyuncs.com/my-bucket", hint: "如 OSS/S3 endpoint + bucket 名" },
+  "备忘录":   { color: "#8c8c8c", icon: icon("note"),      placeholder: "", hint: "仅展示文本，不做监控" },
 };
 // 自定义类型：按名称哈希取色，永远有颜色
 function kindMeta(k) {
-  if (!k) return { color: "#8c8c8c", icon: "📦" };
+  if (!k) return { color: "#8c8c8c", icon: icon("box") };
   const preset = KIND_META[k];
   if (preset) return preset;
   // 兜底：用 kind 名称哈希到 CAT_COLORS
   let h = 0;
   for (const ch of k) h = (h * 31 + ch.codePointAt(0)) >>> 0;
-  return { color: CAT_COLORS[h % CAT_COLORS.length], icon: "📦" };
+  return { color: CAT_COLORS[h % CAT_COLORS.length], icon: icon("box") };
 }
 
 const $ = (id) => document.getElementById(id);
@@ -1123,7 +1234,7 @@ async function loadSites() {
     renderSites();
     refreshProbeStatus();
   } catch (e) {
-    $("container").innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>加载失败，请刷新重试</p></div>`;
+    $("container").innerHTML = `<div class="empty-state"><div class="icon" style="color:var(--c-prod)">${icon("alert")}</div><p>加载失败，请刷新重试</p></div>`;
   }
 }
 
@@ -1141,7 +1252,7 @@ async function refreshProbeStatus(retry = 0) {
     else { el.classList.add("probe-fail"); }
     const s = sites.find(x => x.id === id);
     const job = s ? probeJobName(s) : "";
-    el.title = `📡 拨测任务：「${job}」\n${st.ok ? "✅" : "❌"} ${st.message}（${st.time}）`;
+    el.title = `拨测任务「${job}」\n${st.ok ? "✓ " : "✗ "}${st.message}（${st.time}）`;
   });
 }
 
@@ -1157,9 +1268,9 @@ function probeTitle(s) {
   const job = probeJobName(s);
   const st = probeStatusMap[s.id];
   if (st) {
-    return `📡 拨测任务：「${job}」\n${st.ok ? "✅ 已同步" : "❌ 同步失败"}：${st.message}（${st.time}）`;
+    return `拨测任务「${job}」\n${st.ok ? "✓ 已同步" : "✗ 同步失败"}：${st.message}（${st.time}）`;
   }
-  return `📡 拨测任务：「${job}」\n将自动加入 categraf 拨测`;
+  return `拨测任务「${job}」\n将自动加入 categraf 拨测`;
 }
 
 // ==================== 渲染分类 ====================
@@ -1169,27 +1280,29 @@ function renderCategories() {
   const envCls = { "生产环境": "tag-prod", "测试环境": "tag-test" };
   $("envBar").innerHTML = envs.map(e => {
     const n = e === "全部" ? sites.length : sites.filter(s => s.env === e).length;
-    const label = e === "全部" ? "🌐 全部环境" : (e === "生产环境" ? "🔴 生产环境" : "🟢 测试环境");
-    return `<span class="cat-tag ${envCls[e] || ""} ${e === activeEnv ? "active" : ""}" onclick="filterEnv('${e}')">${label} <small>(${n})</small></span>`;
+    const ic = e === "全部" ? icon("layers")
+      : (e === "生产环境" ? `<span class="ic-dot" style="background:var(--c-prod)"></span>`
+                          : `<span class="ic-dot" style="background:var(--c-test)"></span>`);
+    const cls = envCls[e] || "";
+    return `<span class="cat-tag ${cls} ${e === activeEnv ? "active" : ""}" tabindex="0" role="button" onclick="filterEnv('${e}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();filterEnv('${e}')}">${ic} ${e === "全部" ? "全部环境" : e} <small>(${n})</small></span>`;
   }).join("") + `
-  <span style="display:inline-block; width:1px; height:20px; background:#e8e8e8; margin:0 8px; vertical-align:middle;"></span>
+  <span class="bar-sep"></span>
   ${["全部", "HTTP", "TCP", "UDP"].map(p => {
     const n = protocolCount(p);
-    const ctx = p === "全部" ? "tag-dim" : (p === "HTTP" ? "tag-http" : "tag-net");
-    // 具体协议计数为0时置灰不可点；「全部」始终可选
+    // 协议中性灰降噪：选中统一蓝，不再青/紫
     const dead = p !== "全部" && n === 0;
-    const ic = p === "全部" ? "🔀" : p;
-    const tag = `cat-tag ${ctx} ${p === activeProtocol ? "active" : ""}${dead ? "tag-dim" : ""}`;
-    return `<span class="${tag.trim()}" ${dead ? "" : `onclick="filterProtocol('${p}')"`} title="${dead ? "暂无该协议监控目标" : ""}">${ic} <small>(${n})</small></span>`;
+    const ic = p === "全部" ? icon("filter") : "";
+    const tag = `cat-tag ${p === activeProtocol ? "active" : ""}${dead ? " tag-dim" : ""}`;
+    return `<span class="${tag.trim()}" tabindex="0" role="button" ${dead ? "" : `onclick="filterProtocol('${p}')"`} title="${dead ? "暂无该协议监控目标" : ""}">${ic}${p === "全部" ? "全部协议" : p} <small>(${n})</small></span>`;
   }).join("")}
-  <span style="display:inline-block; width:1px; height:20px; background:#e8e8e8; margin:0 8px; vertical-align:middle;"></span>
+  <span class="bar-sep"></span>
   ${["已监控", "未监控"].map(m => {
     const n = sites.filter(s => m === "已监控" ? !!s.monitor : (!s.monitor && (s.domain || s.public_url || s.private_url || s.connection))).length;
-    const ic = m === "已监控" ? "📡" : "💤";
-    const tag = `cat-tag ${m === "已监控" ? "tag-mon" : "tag-unmon"} ${m === activeMonitor ? "active" : ""}`;
-    return `<span class="${tag}" onclick="filterMonitor('${m}')">${ic} ${m} <small>(${n})</small></span>`;
+    const ic = m === "已监控" ? icon("radar") : icon("moon");
+    const tag = `cat-tag ${m === activeMonitor ? "active" : ""}`;
+    return `<span class="${tag}" tabindex="0" role="button" onclick="filterMonitor('${m}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();filterMonitor('${m}')}">${ic} ${m} <small>(${n})</small></span>`;
   }).join("")}
-  ${activeMonitor === "全部" || activeProtocol !== "全部" ? `<span class="cat-tag active" onclick="clearProbeFilter()" title="清除监控/协议筛选">✕ 清除</span>` : ""}`;
+  ${activeMonitor !== "全部" || activeProtocol !== "全部" ? `<span class="cat-tag active" tabindex="0" role="button" onclick="clearProbeFilter()" title="清除监控/协议筛选">${icon("x")} 清除</span>` : ""}`;
 
   // 分类只显示当前环境下实际存在的；切环境后若原选中分类不存在则回到「全部」
   let pool = activeEnv === "全部" ? sites : sites.filter(s => s.env === activeEnv);
@@ -1200,7 +1313,7 @@ function renderCategories() {
   cats.sort((a, b) => a.localeCompare(b, "zh-CN"));
 
   // 左侧目录：「全部」在最上，分类按名称排序，「未分类」（有才显示）排最后
-  const entries = [{ key: "全部", color: "#8c8c8c", n: pool.length, label: "🗂 全部" }];
+  const entries = [{ key: "全部", color: "#8c8c8c", n: pool.length, label: "全部" }];
   entries.push(...cats.map(c => ({
     key: c, color: catColor(c), n: pool.filter(s => (s.category || "").trim() === c).length
   })));
@@ -1208,7 +1321,7 @@ function renderCategories() {
     entries.push({ key: "未分类", color: "#bfbfbf", n: pool.filter(s => !(s.category || "").trim()).length });
   }
   $("categoryBar").innerHTML = entries.map(e => `
-    <div class="cat-item ${activeCategory === e.key ? "active" : ""}" data-cat="${escapeAttr(e.key)}" onclick="filterCategory(this)">
+    <div class="cat-item ${activeCategory === e.key ? "active" : ""}" data-cat="${escapeAttr(e.key)}" tabindex="0" role="button" onclick="filterCategory(this)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();filterCategory(this)}">
       <span class="cat-dot" style="background:${e.color}"></span>
       <span class="cat-name">${e.label || escapeHtml(e.key)}</span>
       <span class="cat-count">${e.n}</span>
@@ -1300,7 +1413,7 @@ function renderSites() {
 
   const container = $("container");
   if (!cards.length) {
-    container.innerHTML = `<div class="empty-state"><div class="icon">📭</div><p>${keyword ? "没有找到匹配的网站" : "暂无数据，请联系运维添加"}</p></div>`;
+    container.innerHTML = `<div class="empty-state"><div class="icon" style="color:#bfbfbf">${icon("inbox")}</div><p>${keyword ? "没有找到匹配的网站" : "暂无数据，请联系运维添加"}</p></div>`;
     return;
   }
   container.innerHTML = `<div class="cards-grid">${cards.join("")}</div>`;
@@ -1322,7 +1435,7 @@ function toggleGroupMode() {
 function syncGroupToggle() {
   const btn = $("groupToggle");
   if (!btn) return;
-  btn.textContent = groupByEnv ? "🔗 分组卡" : "🧩 拆开卡";
+  btn.innerHTML = groupByEnv ? `${icon("link")} 分组卡` : `${icon("layers")} 拆开卡`;
   btn.title = groupByEnv
     ? "当前：同站点名合并为一张分组卡（点击改为每个环境独立成卡）"
     : "当前：每个环境独立一张卡（点击改为同站点名合并）";
@@ -1344,15 +1457,15 @@ function siteCard(s) {
           ${s.env ? `<span class="env-tag ${envClass}">${escapeHtml(s.env)}</span>` : ""}
           ${isAdmin() ? `<span class="card-actions">
             ${monitorBtn(s)}
-            <button class="btn btn-default btn-sm" data-edit-id="${escapeAttr(s.id)}" onclick="openEditSite(this)">✏️ 编辑</button>
-            <button class="btn btn-danger-soft btn-sm" data-del-id="${escapeAttr(s.id)}" data-del-name="${escapeAttr(s.name)}" data-del-env="${escapeAttr(s.env || "")}" onclick="openDeleteModal(this)">🗑️ 删除</button>
+            <button class="btn btn-default btn-sm" data-edit-id="${escapeAttr(s.id)}" onclick="openEditSite(this)">${icon("edit")} 编辑</button>
+            <button class="btn btn-danger-soft btn-sm" data-del-id="${escapeAttr(s.id)}" data-del-name="${escapeAttr(s.name)}" data-del-env="${escapeAttr(s.env || "")}" onclick="openDeleteModal(this)">${icon("trash")} 删除</button>
           </span>` : ""}
         </span>
       </div>
       <div class="card-body">${body}</div>
       ${s.remark ? `<div class="card-desc">${escapeHtml(s.remark)}</div>` : ""}
       <div class="card-meta">
-        ${s.owner ? `<span>👤 ${escapeHtml(s.owner)}</span>` : ""}
+        ${s.owner ? `<span>${icon("user")} ${escapeHtml(s.owner)}</span>` : ""}
       </div>
     </div>
   `;
@@ -1371,7 +1484,7 @@ function hasAnyUrl(s) {
 // 拨测状态徽标：写站点即生效，monitor=true 的站点自动成为拨测目标
 function probeBadge(s) {
   return s.monitor
-    ? `<span class="env-tag env-probe" title="${escapeAttr(probeTitle(s))}" id="probe-${escapeAttr(s.id)}">📡 已监控 · ${escapeHtml(probeCfgLabel(s))}</span>`
+    ? `<span class="env-tag env-probe" title="${escapeAttr(probeTitle(s))}" id="probe-${escapeAttr(s.id)}">${icon("radar")} 已监控 · ${escapeHtml(probeCfgLabel(s))}</span>`
     : `<span class="env-tag env-off">未加入监控</span>`;
 }
 
@@ -1384,9 +1497,9 @@ function monitorBtn(s) {
   const hasConn = !!(s.connection || "").trim();
   if (!hasUrl && !hasConn) return "";
   if (s.monitor) {
-    return `<button class="btn btn-default btn-sm" data-site-id="${escapeAttr(s.id)}" onclick="quickMonitorOff(this)">⏹️ 取消监控</button>`;
+    return `<button class="btn btn-default btn-sm" data-site-id="${escapeAttr(s.id)}" onclick="quickMonitorOff(this)">${icon("stop")} 取消监控</button>`;
   }
-  return `<button class="btn btn-default btn-sm" data-site-id="${escapeAttr(s.id)}" onclick="openProbeModal(this)">📡 加入监控</button>`;
+  return `<button class="btn btn-default btn-sm" data-site-id="${escapeAttr(s.id)}" onclick="openProbeModal(this)">${icon("radar")} 加入监控</button>`;
 }
 
 // 卡片主体：URL 行 + 连接块（哪个填了显示哪个，都填都显示）；备忘录单独渲染正文
@@ -1413,8 +1526,8 @@ function cardBodyHtml(s) {
 function connBoxHtml(s) {
   const v = (s.connection || "").trim();
   if (!v) return `<div class="conn-box"><span class="txt">— 未填写 —</span></div>`;
-  const mon = (s.monitor && !hasAnyUrl(s)) ? `<span class="url-mon">📡 已监控</span>` : "";
-  return `<div class="conn-box"><span class="txt">${escapeHtml(v)}</span>${mon}<span class="icon" data-copy="${escapeAttr(v)}" onclick="copyGroupItem(this)" title="复制连接串">📋</span></div>`;
+  const mon = (s.monitor && !hasAnyUrl(s)) ? `<span class="url-mon">${icon("radar")} 已监控</span>` : "";
+  return `<div class="conn-box"><span class="txt">${escapeHtml(v)}</span>${mon}<span class="icon" data-copy="${escapeAttr(v)}" onclick="copyGroupItem(this)" title="复制连接串">${icon("copy")}</span></div>`;
 }
 
 // 复制单个连接串（区别于整组复制）。值从 data-copy 读，见 escapeAttr 的注释
@@ -1427,7 +1540,7 @@ function copyGroupItem(el) {
 function urlRowHtml(s) {
   const probeVal = monitorEnabled(s) ? probeTargetValue(s) : "";
   const mon = v => (probeVal && v === probeVal)
-    ? `<span class="url-mon">📡 已监控</span>` : "";
+    ? `<span class="url-mon">${icon("radar")} 已监控</span>` : "";
   const urlRow = (label, cls, value) => value
     ? `<div class="url-row"><span class="url-label ${cls}">${label}</span><a href="${escapeAttr(normalizeUrl(value))}" target="_blank" rel="noopener">${escapeHtml(value)}</a>${mon(value)}<button class="copy-btn" data-copy="${escapeAttr(value)}">复制</button></div>`
     : `<div class="url-row"><span class="url-label ${cls}">${label}</span><span class="url-empty">未配置</span></div>`;
@@ -1470,10 +1583,10 @@ function probeKindMismatchTag(s) {
   const isNet = !hasAnyUrl(s) && !!(s.connection || "").trim();
   const isHttp = hasAnyUrl(s);
   if (k === "网站" && isNet) {
-    return `<span class="kind-tag" style="background:#fff7e6;color:#d46b08" title="该记录资源类型标为「网站」，但只填了连接串，实际走端口(TCP/UDP)拨测">⚠ 实际端口拨测</span>`;
+    return `<span class="kind-tag" style="background:#fff7e6;color:#d46b08" title="该记录资源类型标为「网站」，但只填了连接串，实际走端口(TCP/UDP)拨测">${icon("alert")} 实际端口拨测</span>`;
   }
   if (k === "非网站" && isHttp) {
-    return `<span class="kind-tag" style="background:#e6f4ff;color:#0958d9" title="该记录资源类型标为「非网站」，但填了 URL，实际走 HTTP 拨测">⚠ 实际HTTP拨测</span>`;
+    return `<span class="kind-tag" style="background:#e6f4ff;color:#0958d9" title="该记录资源类型标为「非网站」，但填了 URL，实际走 HTTP 拨测">${icon("alert")} 实际HTTP拨测</span>`;
   }
   return "";
 }
@@ -1481,7 +1594,7 @@ function probeKindMismatchTag(s) {
 // 同站点名下某环境的列（分组卡用）
 function envCol(env, entrySites) {
   const isProd = env === "生产环境";
-  const label = isProd ? "🔴 生产环境" : "🟢 测试环境";
+  const label = isProd ? `<span class="ic-dot" style="background:var(--c-prod)"></span> 生产环境` : `<span class="ic-dot" style="background:var(--c-test)"></span> 测试环境`;
   // 同环境多条（少见），逐条渲染卡片主体
   let body = "";
   entrySites.forEach(s => { body += `<div class="card-body">${cardBodyHtml(s)}</div>`; });
@@ -1490,10 +1603,10 @@ function envCol(env, entrySites) {
       <span class="env-col-label ${isProd ? "prod" : "test"}">${label}</span>
       <span style="display:flex; align-items:center; gap:10px;">
         ${entrySites.filter(s => s.monitor).map(s =>
-          `<span class="env-tag env-probe" id="probe-${escapeAttr(s.id)}" title="${escapeAttr(probeTitle(s))}" style="font-size:11px">📡 已监控 · ${escapeHtml(probeCfgLabel(s))}</span>`).join("")}
+          `<span class="env-tag env-probe" id="probe-${escapeAttr(s.id)}" title="${escapeAttr(probeTitle(s))}" style="font-size:11px">${icon("radar")} 已监控 · ${escapeHtml(probeCfgLabel(s))}</span>`).join("")}
         ${isAdmin() ? entrySites.map(s => monitorBtn(s)).join("") : ""}
-        ${isAdmin() ? entrySites.map(s => `<button class="btn btn-default btn-sm" data-edit-id="${escapeAttr(s.id)}" onclick="openEditSite(this)">✏️ 编辑</button>`).join("") : ""}
-        ${isAdmin() ? entrySites.map(s => `<button class="btn btn-danger btn-sm" data-del-id="${escapeAttr(s.id)}" data-del-name="${escapeAttr(s.name)}" data-del-env="${escapeAttr(env)}" onclick="openDeleteModal(this)">🗑️ 删除</button>`).join("") : ""}
+        ${isAdmin() ? entrySites.map(s => `<button class="btn btn-default btn-sm" data-edit-id="${escapeAttr(s.id)}" onclick="openEditSite(this)">${icon("edit")} 编辑</button>`).join("") : ""}
+        ${isAdmin() ? entrySites.map(s => `<button class="btn btn-danger btn-sm" data-del-id="${escapeAttr(s.id)}" data-del-name="${escapeAttr(s.name)}" data-del-env="${escapeAttr(env)}" onclick="openDeleteModal(this)">${icon("trash")} 删除</button>`).join("") : ""}
       </span>
     </div>
     ${body}
@@ -1517,14 +1630,14 @@ function groupCard(group, gi) {
   // 非空才列，避免「未分类」「—」这类占位噪声
   const subParts = [
     (sample.category || "").trim(),
-    (sample.owner || "").trim() ? `👤 ${sample.owner.trim()}` : "",
+    (sample.owner || "").trim() ? sample.owner.trim() : "",
   ].filter(Boolean);
   const sub = subParts.length ? `<span class="head-sub">${escapeHtml(subParts.join(" · "))}</span>` : "";
   return `<div class="card">
     <div class="card-header">
       <span class="card-name" title="${escapeAttr(sample.kind || "网站")}">${meta.icon} ${escapeHtml(name)}</span>
       ${sub}
-      <button class="copy-group-btn" data-gi="${gi}" onclick="copyGroupInfo(this)">📋 复制全部信息</button>
+      <button class="copy-group-btn" data-gi="${gi}" onclick="copyGroupInfo(this)">${icon("copy")} 复制全部信息</button>
     </div>
     ${cols}
   </div>`;
@@ -1638,7 +1751,7 @@ function copyAllLinks() {
   const btn = $("copyAllBtn");
   const done = ok => {
     showToast(ok ? `已复制 ${sites.length} 条` : "复制失败，请手动选择复制", ok ? "success" : "error");
-    if (btn) { btn.textContent = "✓ 已复制"; setTimeout(() => btn.textContent = "🔗 全部复制", 1500); }
+    if (btn) { btn.innerHTML = `${icon("check")} 已复制`; setTimeout(() => btn.innerHTML = `${icon("link")} 全部复制`, 1500); }
   };
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(lines).then(() => done(true)).catch(() => done(false));
@@ -1682,10 +1795,24 @@ function updateAdminUI() {
   $("logoutBtn").style.display = token ? "" : "none";
   $("addBtn").style.display = admin ? "" : "none";
   $("importBtn").style.display = admin ? "" : "none";
-  $("exportBtn").style.display = admin ? "" : "none";
   $("adminBadge").style.display = admin ? "" : "none";
-  $("probesBtn").style.display = admin ? "" : "none";
-  $("usersBtn").style.display = admin ? "" : "none";
+  // 拨测管理/用户管理/导出/退出 收进「管理 ▾」下拉，由 wrap 统一显隐
+  $("adminMenuWrap").style.display = admin ? "" : "none";
+}
+
+// 「管理 ▾」下拉：点按钮切换，点外部或选中项后关闭
+function toggleAdminMenu(e) {
+  e.stopPropagation();
+  const pop = $("adminMenuPop");
+  const btn = $("adminMenuBtn");
+  const open = pop.classList.toggle("open");
+  btn.setAttribute("aria-expanded", String(open));
+}
+function closeAdminMenu() {
+  const pop = $("adminMenuPop");
+  const btn = $("adminMenuBtn");
+  if (pop) pop.classList.remove("open");
+  if (btn) btn.setAttribute("aria-expanded", "false");
 }
 
 // ==================== 批量导入 / 导出 ====================
@@ -1751,7 +1878,7 @@ async function doImport(btn) {
       ? `<div style="margin-top:6px;color:#8c8c8c;">${skipped.map(s => "· " + escapeHtml(s.reason)).join("<br>")}</div>`
       : "";
     box.style.background = (res.added || res.updated) ? "#f6ffed" : "#fff7e6";
-    box.innerHTML = `✅ 成功导入 <b>${res.added ?? 0}</b> 条，<b style="color:#1677ff">更新已有 ${res.updated ?? 0}</b> 条，跳过 ${res.skipped_count ?? 0} 条。${skipDetail}`;
+    box.innerHTML = `${icon("check")} 成功导入 <b>${res.added ?? 0}</b> 条，<b style="color:var(--c-primary)">更新已有 ${res.updated ?? 0}</b> 条，跳过 ${res.skipped_count ?? 0} 条。${skipDetail}`;
     await loadSites();
     showToast(`导入完成：新增 ${res.added} 条`, res.added ? "success" : "error");
   } catch (e) {
@@ -2295,7 +2422,7 @@ function toggleProbeNetAdv() {
   const g = $("probeNetAdvGroup");
   const show = g.style.display === "none";
   g.style.display = show ? "" : "none";
-  $("probeNetAdvToggle").innerHTML = (show ? "▾" : "▸") + " 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）";
+  $("probeNetAdvToggle").innerHTML = (show ? icon("chev-down") : icon("chev-right")) + " 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）";
 }
 
 // 跳过校验与私有 CA 互斥（对齐后端 _normalize_probe_tls：跳过优先，清空 CA）
@@ -2362,7 +2489,7 @@ function toggleProbeQuickNetAdv() {
   const g = $("probeQuickNetAdvGroup");
   const show = g.style.display === "none";
   g.style.display = show ? "" : "none";
-  $("probeQuickAdvToggle").innerHTML = (show ? "▾" : "▸") + " 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）";
+  $("probeQuickAdvToggle").innerHTML = (show ? icon("chev-down") : icon("chev-right")) + " 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）";
 }
 
 // id 从 data-site-id 读，不走内联参数 —— 见 escapeAttr 的注释
@@ -2390,7 +2517,7 @@ function openProbeModal(btn) {
     $("probeExpect").value = escCtl(s.probe_expect || "");
     $("probeReadTimeout").value = s.probe_read_timeout || "";
     $("probeQuickNetAdvGroup").style.display = "none";
-    $("probeQuickAdvToggle").innerHTML = "▸ 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）";
+    $("probeQuickAdvToggle").innerHTML = icon("chev-right") + " 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）";
     updateProbeQuickUdpHint();
   } else {
     // 探测地址下拉：列出该站点已填的 域名/公网/内网 + 自动
@@ -2677,11 +2804,14 @@ function _closeModal(m) {
   if (_DRAFT_MODALS.includes(m.id) && _modalHasDraft(m) && !confirm("弹框里还有未保存的内容，确定放弃吗？")) return;
   m.classList.remove("show");
 }
+// 「管理」下拉：点页面任意处关闭（按钮自身 stopPropagation 不触发）
+document.addEventListener("click", () => closeAdminMenu());
 document.querySelectorAll(".modal-overlay").forEach(m => {
   m.addEventListener("click", e => { if (e.target === m) _closeModal(m); });
 });
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
+  closeAdminMenu();
   // 只关最上面那个。弹框 z-index 都一样，后写进 DOM 的在上层；
   // 原来一次关全部，外面开着用户管理、里面开着资源弹框时一次 Esc 两个都没了。
   const open = [...document.querySelectorAll(".modal-overlay.show")];

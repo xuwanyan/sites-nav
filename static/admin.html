@@ -8,92 +8,131 @@
 <meta name="theme-color" content="#1677ff">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  /* ── 设计令牌：与 index.html 一致 ── */
+  :root {
+    --c-primary: #1677ff; --c-primary-hover: #4096ff; --c-primary-bg: #e6f4ff;
+    --c-text: #1a1a1a; --c-text-2: #595959; --c-text-3: #8c8c8c;
+    --c-border: #e8e8e8; --c-border-2: #f0f0f0;
+    --c-prod: #cf1322; --c-prod-bg: #fff1f0; --c-test: #389e0d; --c-test-bg: #f6ffed;
+    --r-sm: 6px; --r-md: 8px; --r-lg: 10px; --r-xl: 14px;
+    --sh-2: 0 8px 32px rgba(0,0,0,.10); --sh-3: 0 16px 48px rgba(22,119,255,.16);
+    --ease: cubic-bezier(.4,0,.2,1);
+  }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-    background: #f0f2f5;
-    color: #333;
+    color: var(--c-text-2);
     min-height: 100vh;
     display: flex;
     justify-content: center;
     align-items: center;
+    background: radial-gradient(1200px 600px at 50% -10%, #e8efff 0%, #f0f2f5 58%);
+    -webkit-font-smoothing: antialiased;
   }
+  .ic { width: 1em; height: 1em; flex-shrink: 0; vertical-align: -.125em; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
   .login-card {
     background: #fff;
-    border-radius: 12px;
-    border: 1px solid #e8e8e8;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    border-radius: var(--r-xl);
+    border: 1px solid var(--c-border);
+    box-shadow: var(--sh-2);
     width: 90%;
-    max-width: 380px;
-    padding: 32px 28px;
+    max-width: 400px;
+    padding: 36px 32px 32px;
   }
-  .login-card h1 { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
-  .login-card .sub { font-size: 13px; color: #8c8c8c; margin-bottom: 22px; }
+  /* 顶部品牌图标块 */
+  .brand {
+    width: 52px; height: 52px; border-radius: var(--r-lg);
+    background: linear-gradient(135deg, var(--c-primary), #4096ff);
+    color: #fff; display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 18px; box-shadow: 0 8px 20px rgba(22,119,255,.32);
+  }
+  .brand .ic { width: 28px; height: 28px; stroke-width: 1.6; }
+  .login-card h1 { font-size: 19px; font-weight: 600; margin-bottom: 4px; text-align: center; color: var(--c-text); }
+  .login-card .sub { font-size: 13px; color: var(--c-text-3); margin-bottom: 26px; text-align: center; }
   .form-group { margin-bottom: 16px; }
-  .form-group label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+  .form-group label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--c-text-2); }
   .form-group input {
     width: 100%;
-    padding: 10px 12px;
-    border: 1px solid #d9d9d9;
-    border-radius: 6px;
+    padding: 11px 14px;
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-sm);
     font-size: 14px;
     outline: none;
-    transition: border-color 0.2s;
+    transition: border-color .2s, box-shadow .2s;
   }
-  .form-group input:focus { border-color: #1677ff; box-shadow: 0 0 0 2px rgba(22,119,255,0.1); }
+  .form-group input:focus { border-color: var(--c-primary); box-shadow: 0 0 0 3px rgba(22,119,255,.12); }
   .btn {
     width: 100%;
-    padding: 10px;
+    padding: 11px;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     font-size: 14px;
     cursor: pointer;
-    transition: all 0.2s;
-    font-weight: 500;
+    transition: all .2s var(--ease);
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
   }
-  .btn-primary { background: #1677ff; color: #fff; }
-  .btn-primary:hover { background: #4096ff; }
-  .btn-default { background: #fff; color: #333; border: 1px solid #d9d9d9; margin-top: 10px; }
-  .btn-default:hover { border-color: #1677ff; color: #1677ff; }
-  .btn-danger { background: #ff4d4f; color: #fff; margin-top: 10px; }
+  .btn:focus-visible { outline: 2px solid var(--c-primary); outline-offset: 2px; }
+  .btn-primary { background: var(--c-primary); color: #fff; }
+  .btn-primary:hover { background: var(--c-primary-hover); }
+  .btn-default { background: #fff; color: var(--c-text-2); border: 1px solid var(--c-border); margin-top: 10px; }
+  .btn-default:hover { border-color: var(--c-primary); color: var(--c-primary); }
+  .btn-danger { background: var(--c-prod); color: #fff; margin-top: 10px; }
   .btn-danger:hover { background: #ff7875; }
   .ok-box {
-    background: #f6ffed;
+    background: var(--c-test-bg);
     border: 1px solid #b7eb8f;
-    color: #389e0d;
-    border-radius: 6px;
-    padding: 10px 12px;
+    color: var(--c-test);
+    border-radius: var(--r-sm);
+    padding: 12px 14px;
     font-size: 13px;
-    margin-bottom: 16px;
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
   .toast {
     position: fixed;
     top: 24px;
     left: 50%;
-    transform: translateX(-50%);
-    padding: 12px 24px;
-    border-radius: 8px;
-    color: #fff;
+    transform: translateX(-50%) translateY(-8px);
+    padding: 11px 20px;
+    border-radius: var(--r-md);
     font-size: 14px;
     opacity: 0;
-    transition: opacity 0.3s;
+    transition: opacity .25s var(--ease), transform .25s var(--ease);
     pointer-events: none;
+    box-shadow: var(--sh-2);
+    border: 1px solid transparent;
+    font-weight: 500;
+    z-index: 2000;
   }
-  .toast.show { opacity: 1; }
-  .toast.success { background: #52c41a; }
-  .toast.error { background: #ff4d4f; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.success { background: var(--c-test-bg); border-color: #b7eb8f; color: var(--c-test); }
+  .toast.error { background: var(--c-prod-bg); border-color: #ffccc7; color: var(--c-prod); }
 </style>
 </head>
 <body>
 
+<svg style="display:none" aria-hidden="true">
+  <symbol id="i-building" viewBox="0 0 24 24"><path d="M3 21h18"/><path d="M5 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16"/><path d="M15 21V9h2a2 2 0 0 1 2 2v10"/><path d="M9 7h2M9 11h2M9 15h2"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5L20 6"/></symbol>
+  <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></symbol>
+</svg>
+
 <div class="login-card">
-  <h1>🏢 登录</h1>
+  <div class="brand"><svg class="ic"><use href="#i-building"/></svg></div>
+  <h1>登录</h1>
   <div class="sub">公司常用网站导航</div>
 
   <!-- 已登录态 -->
   <div id="loggedInBox" style="display:none;">
-    <div class="ok-box">✅ 当前已登录</div>
+    <div class="ok-box"><svg class="ic"><use href="#i-check"/></svg> 当前已登录</div>
     <button class="btn btn-primary" onclick="location.href='/'">返回首页</button>
-    <button class="btn btn-danger" onclick="doLogout()">退出登录</button>
+    <button class="btn btn-danger" onclick="doLogout()"><svg class="ic"><use href="#i-logout"/></svg> 退出登录</button>
   </div>
 
   <!-- 未登录态 -->
@@ -106,7 +145,7 @@
       <label>密码</label>
       <input type="password" id="password" placeholder="请输入密码" onkeydown="if(event.key==='Enter')doLogin()">
     </div>
-    <button class="btn btn-primary" onclick="doLogin()">登录</button>
+    <button class="btn btn-primary" onclick="doLogin()">登录 <svg class="ic"><use href="#i-arrow-right"/></svg></button>
   </div>
 </div>
 

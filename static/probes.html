@@ -8,26 +8,39 @@
 <meta name="theme-color" content="#1677ff">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  /* ── 设计令牌：与 index.html 一致 ── */
+  :root {
+    --c-primary: #1677ff; --c-primary-hover: #4096ff; --c-primary-bg: #e6f4ff;
+    --c-text: #1a1a1a; --c-text-2: #595959; --c-text-3: #8c8c8c; --c-text-4: #bfbfbf;
+    --c-border: #e8e8e8; --c-border-2: #f0f0f0; --c-bg: #f0f2f5; --c-surface: #fff;
+    --r-sm: 6px; --r-md: 8px; --r-lg: 10px; --r-xl: 12px;
+    --sh-1: 0 1px 4px rgba(0,0,0,.04); --sh-2: 0 4px 16px rgba(0,0,0,.08); --sh-3: 0 8px 32px rgba(0,0,0,.15);
+    --ease: cubic-bezier(.4,0,.2,1);
+    --hd-h: 63px;
+  }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-    background: #f0f2f5; color: #333; min-height: 100vh;
+    background: var(--c-bg); color: var(--c-text-2); min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
   }
+  .ic { width: 1em; height: 1em; flex-shrink: 0; vertical-align: -.125em; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
   .header {
-    background: #fff; border-bottom: 1px solid #e8e8e8; padding: 16px 32px;
+    background: var(--c-surface); border-bottom: 1px solid var(--c-border); padding: 16px 32px;
     display: flex; align-items: center; gap: 24px;
-    position: sticky; top: 0; z-index: 100;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+    position: sticky; top: 0; z-index: 100; box-shadow: var(--sh-1);
   }
-  .header h1 { font-size: 20px; font-weight: 600; color: #1a1a1a; white-space: nowrap; }
+  .header h1 { font-size: 20px; font-weight: 600; color: var(--c-text); white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; }
   .header-actions { display: flex; align-items: center; gap: 12px; margin-left: auto; }
   .btn {
-    padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px;
-    cursor: pointer; transition: all 0.2s; font-weight: 500;
+    padding: 8px 16px; border: none; border-radius: var(--r-sm); font-size: 14px;
+    cursor: pointer; transition: all .2s var(--ease); font-weight: 500;
+    display: inline-flex; align-items: center; gap: 6px; line-height: 1.4; text-decoration: none;
   }
-  .btn-primary { background: #1677ff; color: #fff; }
-  .btn-primary:hover { background: #4096ff; }
-  .btn-default { background: #fff; color: #333; border: 1px solid #d9d9d9; }
-  .btn-default:hover { border-color: #1677ff; color: #1677ff; }
+  .btn:focus-visible { outline: 2px solid var(--c-primary); outline-offset: 2px; }
+  .btn-primary { background: var(--c-primary); color: #fff; }
+  .btn-primary:hover { background: var(--c-primary-hover); }
+  .btn-default { background: #fff; color: var(--c-text-2); border: 1px solid var(--c-border); }
+  .btn-default:hover { border-color: var(--c-primary); color: var(--c-primary); }
   .btn-danger { background: #ff4d4f; color: #fff; }
   .btn-danger:hover { background: #ff7875; }
   .btn-sm { padding: 4px 10px; font-size: 12px; }
@@ -36,7 +49,7 @@
   .container { padding: 24px 32px 40px; max-width: 1100px; margin: 0 auto; }
 
   .info-bar {
-    background: #e6f4ff; border: 1px solid #91caff; border-radius: 8px;
+    background: var(--c-primary-bg); border: 1px solid #91caff; border-radius: var(--r-md);
     padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: #0958d9;
     line-height: 1.6;
   }
@@ -45,40 +58,37 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
   }
 
-  :root { --hd-h: 63px; }
   .card {
-    background: #fff; border: 1px solid #f0f0f0; border-radius: 8px;
-    padding: 20px 24px 8px; box-shadow: 0 1px 2px rgba(0,0,0,.03);
+    background: var(--c-surface); border: 1px solid var(--c-border-2); border-radius: var(--r-md);
+    padding: 20px 24px 8px; box-shadow: var(--sh-1);
   }
   .card-title { font-size: 16px; font-weight: 600; color: #1f1f1f; margin-bottom: 16px; }
-  .card-title .count { color: #8c8c8c; font-weight: 500; }
+  .card-title .count { color: var(--c-text-3); font-weight: 500; }
   table { width: 100%; border-collapse: separate; border-spacing: 0; }
-  th, td { padding: 13px 16px; text-align: left; font-size: 14px; vertical-align: middle; border-bottom: 1px solid #f0f0f0; }
-  th { background: #fafafa; font-weight: 500; color: #8c8c8c; font-size: 13px; white-space: nowrap; position: sticky; top: var(--hd-h); z-index: 5; }
+  th, td { padding: 13px 16px; text-align: left; font-size: 14px; vertical-align: middle; border-bottom: 1px solid var(--c-border-2); }
+  th { background: #fafafa; font-weight: 500; color: var(--c-text-3); font-size: 13px; white-space: nowrap; position: sticky; top: var(--hd-h); z-index: 5; }
   tbody tr:last-child td { border-bottom: none; }
   tr:hover td { background: #fafafa; }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
   .url { word-break: break-all; color: #1f1f1f; }
   .tag {
-    display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 12px;
-    font-weight: 500; line-height: 20px; background: #e6f4ff; color: #1677ff;
+    display: inline-block; padding: 1px 8px; border-radius: var(--r-sm); font-size: 12px;
+    font-weight: 500; line-height: 20px; background: var(--c-primary-bg); color: var(--c-primary);
   }
 
-  .empty-state { text-align: center; padding: 60px 20px; color: #999; }
-  .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+  .empty-state { text-align: center; padding: 60px 20px; color: var(--c-text-3); }
+  .empty-state .icon { font-size: 48px; margin-bottom: 12px; color: var(--c-text-4); }
 
   /* TOML 预览卡片 */
   .preview-card {
-    margin-top: 24px; background: #fff; border: 1px solid #e8e8e8;
-    border-radius: 10px; padding: 20px 24px;
+    margin-top: 24px; background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--r-lg); padding: 20px 24px;
   }
-  .preview-header {
-    display: flex; align-items: center; gap: 16px; margin-bottom: 14px;
-  }
-  .preview-header h3 { font-size: 15px; color: #1a1a1a; }
+  .preview-header { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
+  .preview-header h3 { font-size: 15px; color: var(--c-text); }
   .preview-meta { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: #666; }
   .preview-meta code {
-    background: #f5f5f5; padding: 2px 8px; border-radius: 4px;
+    background: #f5f5f5; padding: 2px 8px; border-radius: var(--r-sm);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
   }
   .preview-block { margin-top: 12px; }
@@ -87,57 +97,73 @@
     font-size: 13px; font-weight: 600; color: #555; margin-bottom: 6px;
   }
   .preview-block pre {
-    background: #1e1e1e; color: #d4d4d4; border-radius: 8px; padding: 14px 16px;
+    background: #1e1e1e; color: #d4d4d4; border-radius: var(--r-md); padding: 14px 16px;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12px; line-height: 1.6; overflow-x: auto; white-space: pre;
     max-height: 420px; overflow-y: auto;
   }
   .preview-block pre:empty::before { content: "（无配置）"; color: #888; }
-  .preview-hint { font-size: 11px; color: #999; margin-top: 10px; }
+  .preview-hint { font-size: 11px; color: var(--c-text-3); margin-top: 10px; }
 
-  /* 模态框 */
+  /* 模态框：opacity/visibility 过渡（与 index 一致） */
   .modal-mask {
-    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45);
-    z-index: 1000; align-items: center; justify-content: center;
+    position: fixed; inset: 0; background: rgba(0,0,0,.45);
+    z-index: 1000; display: flex; align-items: center; justify-content: center;
+    opacity: 0; visibility: hidden; pointer-events: none;
+    transition: opacity .2s var(--ease), visibility .2s var(--ease);
   }
-  .modal-mask.open { display: flex; }
+  .modal-mask.open { opacity: 1; visibility: visible; pointer-events: auto; }
   .modal {
-    background: #fff; border-radius: 10px; padding: 24px; width: 520px;
-    max-width: 92vw; max-height: 85vh; overflow-y: auto;
-    box-shadow: 0 6px 24px rgba(0,0,0,.15);
+    background: #fff; border-radius: var(--r-lg); padding: 24px; width: 520px;
+    max-width: 92vw; max-height: 85vh; overflow-y: auto; box-shadow: var(--sh-3);
+    transform: scale(.96) translateY(8px); transition: transform .22s var(--ease);
   }
-  .modal h3 { font-size: 16px; margin-bottom: 16px; color: #1a1a1a; }
+  .modal-mask.open .modal { transform: scale(1) translateY(0); }
+  .modal h3 { font-size: 16px; margin-bottom: 16px; color: var(--c-text); display: flex; align-items: center; gap: 8px; }
   .form-group { margin-bottom: 14px; }
   .form-group label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 4px; color: #555; }
   .form-group input, .form-group select, .form-group textarea {
-    width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px;
+    width: 100%; padding: 8px 12px; border: 1px solid var(--c-border); border-radius: var(--r-sm);
     font-size: 14px; outline: none; transition: border-color .2s;
   }
   .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
-    border-color: #1677ff; box-shadow: 0 0 0 2px rgba(22,119,255,.1);
+    border-color: var(--c-primary); box-shadow: 0 0 0 2px rgba(22,119,255,.1);
   }
-  .form-group .hint { font-size: 11px; color: #999; margin-top: 3px; }
+  .form-group .hint { font-size: 11px; color: var(--c-text-3); margin-top: 3px; }
   .form-row { display: flex; gap: 12px; }
   .form-row .form-group { flex: 1; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 
   .toast {
-    position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
-    padding: 10px 20px; border-radius: 6px; font-size: 14px; z-index: 2000;
-    display: none; box-shadow: 0 2px 8px rgba(0,0,0,.15);
+    position: fixed; top: 24px; left: 50%; transform: translateX(-50%) translateY(-8px);
+    padding: 11px 20px; border-radius: var(--r-md); font-size: 14px; z-index: 2000;
+    opacity: 0; transition: opacity .25s var(--ease), transform .25s var(--ease);
+    box-shadow: var(--sh-2); border: 1px solid transparent; font-weight: 500; pointer-events: none;
   }
-  .toast.success { background: #f6ffed; border: 1px solid #b7eb8f; color: #389e0d; }
-  .toast.error { background: #fff2f0; border: 1px solid #ffccc7; color: #cf1322; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.success { background: #f6ffed; border-color: #b7eb8f; color: #389e0d; }
+  .toast.error { background: #fff2f0; border-color: #ffccc7; color: #cf1322; }
 </style>
 </head>
 <body>
 
+<svg style="display:none" aria-hidden="true">
+  <symbol id="i-radar" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 12 19 7"/><path d="M12 12a7 7 0 0 1 7-5"/></symbol>
+  <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/><path d="M9 12h12"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v4h-4"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 20h20Z"/><path d="M12 10v4M12 17.5v.5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5L20 6"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M6 3h8l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/></symbol>
+</svg>
+
 <div class="header">
-  <h1>📡 拨测目标管理</h1>
+  <h1><svg class="ic" style="color:var(--c-primary)"><use href="#i-radar"/></svg> 拨测目标管理</h1>
   <div class="header-actions">
-    <button class="btn btn-default" onclick="location.href='/'">← 返回导航</button>
-    <button class="btn btn-default" onclick="copyAllLinks()">🔗 一键复制全部链接</button>
-    <button class="btn btn-default" onclick="renderProbes()">🔄 刷新</button>
+    <button class="btn btn-default" onclick="location.href='/'"><svg class="ic"><use href="#i-arrow-left"/></svg> 返回导航</button>
+    <button class="btn btn-default" onclick="copyAllLinks()"><svg class="ic"><use href="#i-link"/></svg> 一键复制全部链接</button>
+    <button class="btn btn-default" onclick="renderProbes()"><svg class="ic"><use href="#i-refresh"/></svg> 刷新</button>
   </div>
 </div>
 
@@ -158,20 +184,20 @@
       <h3>当前生成的 TOML 配置</h3>
       <div class="preview-meta">
         <span>版本 <code id="previewVersion">-</code></span>
-        <button class="btn btn-default btn-sm" onclick="copyAllToml()">📋 复制全部</button>
+        <button class="btn btn-default btn-sm" onclick="copyAllToml()"><svg class="ic"><use href="#i-copy"/></svg> 复制全部</button>
       </div>
     </div>
     <div class="preview-block">
       <div class="preview-block-title">
         <span>HTTP 拨测（http_response，来自站点监控目标）</span>
-        <button class="btn btn-default btn-sm" onclick="copyToml('http')">📋 复制</button>
+        <button class="btn btn-default btn-sm" onclick="copyToml('http')"><svg class="ic"><use href="#i-copy"/></svg> 复制</button>
       </div>
       <pre id="previewHttp">加载中...</pre>
     </div>
     <div class="preview-block">
       <div class="preview-block-title">
         <span>端口拨测（net_response）</span>
-        <button class="btn btn-default btn-sm" onclick="copyToml('net')">📋 复制</button>
+        <button class="btn btn-default btn-sm" onclick="copyToml('net')"><svg class="ic"><use href="#i-copy"/></svg> 复制</button>
       </div>
       <pre id="previewNet">加载中...</pre>
     </div>
@@ -251,6 +277,14 @@ let editingId = null;
 let deletingId = null;
 
 const $ = (id) => document.getElementById(id);
+// SVG 图标引用（与 index.html 一致）
+function icon(name, cls) {
+  return `<svg class="ic${cls ? " " + cls : ""}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+}
+// 表头 sticky 偏移跟随顶栏实际高度（避免滚动时被遮，对齐 index 的 syncHeadH）
+const syncHeadH = () => document.documentElement.style.setProperty("--hd-h", document.querySelector(".header").offsetHeight + "px");
+syncHeadH();
+window.addEventListener("resize", syncHeadH);
 
 if (!token) { location.href = "/admin"; }
 
@@ -290,9 +324,9 @@ function apiError(data, fallback) {
 function showToast(msg, type = "success") {
   const t = $("toast");
   t.textContent = msg;
-  t.className = "toast " + type;
-  t.style.display = "block";
-  setTimeout(() => { t.style.display = "none"; }, 3000);
+  t.className = "toast " + type + " show";
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => { t.classList.remove("show"); }, 2500);
 }
 
 function escapeHtml(s) {
@@ -312,7 +346,7 @@ async function loadProbes() {
     renderProbes();
     loadPreview();
   } catch (e) {
-    $("content").innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>加载失败：${escapeHtml(e.message)}</p></div>`;
+    $("content").innerHTML = `<div class="empty-state"><div class="icon" style="color:var(--c-prod)">${icon("alert")}</div><p>加载失败：${escapeHtml(e.message)}</p></div>`;
   }
 }
 
@@ -366,7 +400,7 @@ function copyAllToml() {
 
 function renderProbes() {
   if (!probes.length) {
-    $("content").innerHTML = `<div class="card"><div class="empty-state"><div class="icon">📡</div><p>暂无拨测目标</p><p style="font-size:12px; margin-top:8px; color:#bbb;">到首页站点填写页为资源勾选「拨测监控」即可生成</p></div></div>`;
+    $("content").innerHTML = `<div class="card"><div class="empty-state"><div class="icon" style="color:var(--c-primary)">${icon("radar")}</div><p>暂无拨测目标</p><p style="font-size:12px; margin-top:8px; color:var(--c-text-4);">到首页站点填写页为资源勾选「拨测监控」即可生成</p></div></div>`;
     return;
   }
   const rows = probes.map(p => {
