@@ -135,9 +135,11 @@ n_txt = toml_gen.generate_net_toml(full)
 check("正常配置 http_response 可解析", isinstance(tomllib.loads(h_txt)["instances"], list))
 check("正常配置 net_response 可解析", isinstance(tomllib.loads(n_txt)["instances"], list))
 check("空目标列表返回占位注释", toml_gen.generate_http_toml([]).strip().startswith("#"))
+# 用 body 而不是 send：send 是端口拨测的字段，对 HTTP 目标不产生任何输出。
+# version 现在对「生成的 TOML」取哈希，不改变输出就不该改变 version（见第 5 节）
 check("version 内容变化时改变",
       toml_gen.config_version(full) != toml_gen.config_version(
-          [dict(full[0], send="zz")] + full[1:]))
+          [dict(full[0], body="zz")] + full[1:]))
 check("version 与目标顺序无关",
       toml_gen.config_version(full) == toml_gen.config_version(list(reversed(full))))
 
@@ -155,6 +157,42 @@ for ch, label in [("\x00", "NUL"), ("\x08", "BS"), ("\x0b", "VT"),
         check(f"net send 含 {label} 可解析", got == "a" + ch + "b", repr(got))
     except Exception as e:
         check(f"net send 含 {label} 可解析", False, type(e).__name__ + ": " + str(e))
+
+
+# ── 5. version 必须跟生成的 TOML 同步 ───────────────────────────
+# 回归点：config_version 原本是手写的字段清单，漏了 interval 和 cert_expire。
+# 这两项只影响实例分组和可选行（interval = ".." / metrics_drop），不显眼：
+# 改它们 TOML 变了、version 却没变 → categraf 认为配置没变、不重载 → 改动静默失效。
+# 线上「支持指定网址不采集证书过期时间」这个功能就中过招。
+# 不变量：只要生成的 TOML 变了，version 就必须跟着变。
+
+VERSION_PAIRS = [
+    ("HTTP interval 空 → 15s", "http",
+     http_target("", id="a1b2c3d4", interval=""),
+     http_target("", id="a1b2c3d4", interval="15s")),
+    ("HTTP interval 15s → 30s", "http",
+     http_target("", id="a1b2c3d4", interval="15s"),
+     http_target("", id="a1b2c3d4", interval="30s")),
+    ("HTTP cert_expire None → False", "http",
+     http_target("", id="a1b2c3d4"),
+     http_target("", id="a1b2c3d4", cert_expire=False)),
+    ("HTTP cert_expire False → True", "http",
+     http_target("", id="a1b2c3d4", cert_expire=False),
+     http_target("", id="a1b2c3d4", cert_expire=True)),
+    ("net interval 空 → 30s", "net",
+     net_target("10.0.0.1:22", "J1", id="a1b2c3d4", interval=""),
+     net_target("10.0.0.1:22", "J1", id="a1b2c3d4", interval="30s")),
+    ("net expect 空 → pong", "net",
+     net_target("10.0.0.1:22", "J1", id="a1b2c3d4"),
+     net_target("10.0.0.1:22", "J1", id="a1b2c3d4", expect="pong")),
+]
+
+for label, kind, a, b in VERSION_PAIRS:
+    gen = toml_gen.generate_http_toml if kind == "http" else toml_gen.generate_net_toml
+    t_a, t_b = gen([a]), gen([b])
+    v_a, v_b = toml_gen.config_version([a]), toml_gen.config_version([b])
+    check(f"TOML 变则 version 必变：{label}", t_a == t_b or v_a != v_b,
+          f"TOML变了={t_a != t_b} version变了={v_a != v_b}")
 
 
 ok = sum(1 for _, r in RESULTS if r)

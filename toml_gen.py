@@ -308,34 +308,20 @@ def _toml_quote(s: str) -> str:
 
 def config_version(targets: list[dict]) -> str:
     """计算当前配置 MD5。内容不变则 version 不变，categraf 不会误重启采集实例。
-    生成器版本盐：TOML 生成逻辑变更时递增，强制 categraf 重新拉取配置。
+
+    这里直接对**生成出来的 TOML** 取哈希，而不是维护一份字段清单。
+    清单式写法漏过 interval 和 cert_expire —— 它们只影响分组与可选行，不细看很容易漏：
+    结果是 TOML 变了、version 却没变，categraf 认为配置没变不重载，改动静默失效。
+    哈希实际输出就不存在"漏字段"这回事，以后新增字段也不用回来补。
+
+    先按 id 排序再生成，保证 version 与调用方传入的目标顺序无关。
     """
     import hashlib
+    ordered = sorted(targets, key=lambda t: (t.get("id", ""), t.get("url", ""), t.get("job", "")))
     h = hashlib.md5()
     # 生成器版本盐：TOML 生成逻辑变更时递增，强制 categraf 重新拉取配置
-    h.update(b"schema:v3|")
-    sorted_targets = sorted(targets, key=lambda t: t.get("id", ""))
-    for t in sorted_targets:
-        headers = t.get("headers") or []
-        parts = [
-            t.get("id", ""),
-            t.get("kind", ""),
-            t.get("url", ""),
-            t.get("method", ""),
-            t.get("job", ""),
-            t.get("expected_status_codes", ""),
-            t.get("response_timeout", ""),
-            str(bool(t.get("use_tls", False))),
-            t.get("tls_ca", ""),
-            str(bool(t.get("insecure_skip_verify", False))),
-            t.get("protocol", ""),
-            t.get("timeout", ""),
-            t.get("read_timeout", ""),
-            t.get("send", ""),
-            t.get("expect", ""),
-            t.get("body", ""),
-            json.dumps(sorted(headers), ensure_ascii=False) if headers else "",
-            str(t.get("follow_redirects")),
-        ]
-        h.update("|".join(parts).encode("utf-8"))
+    h.update(b"schema:v4|")
+    h.update(generate_http_toml(ordered).encode("utf-8"))
+    h.update(b"|")
+    h.update(generate_net_toml(ordered).encode("utf-8"))
     return h.hexdigest()
