@@ -783,7 +783,8 @@
         </div>
         <div class="form-group">
           <label>超时时长</label>
-          <input type="text" id="f_probe_timeout" placeholder="如 3s / 500ms，纯数字按秒，留空用默认 3s（端口拨测 1s）">
+          <select id="f_probe_timeout" onchange="timeoutSelectChanged(this)"></select>
+          <input type="text" class="mode-input" id="f_probe_timeout_custom" placeholder="自定义，如 500ms / 2s" style="display:none;margin-top:6px">
         </div>
         <div class="form-group" style="max-width:190px;">
           <label>探测间隔</label>
@@ -811,7 +812,8 @@
           </div>
           <div class="form-group" style="max-width:150px;">
             <label>读超时</label>
-            <input type="text" id="f_probe_read_timeout" placeholder="如 500ms / 3s，留空用默认 3s">
+            <select id="f_probe_read_timeout" onchange="timeoutSelectChanged(this)"></select>
+            <input type="text" class="mode-input" id="f_probe_read_timeout_custom" placeholder="自定义，如 500ms / 2s" style="display:none;margin-top:6px">
           </div>
         </div>
       </div>
@@ -973,7 +975,8 @@
           </div>
           <div class="form-group">
             <label>连接超时时间</label>
-            <input type="text" id="probePortTimeout" placeholder="如 3s / 500ms，留空用默认 1s" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
+            <select id="probePortTimeout" onchange="timeoutSelectChanged(this)"></select>
+            <input type="text" class="mode-input" id="probePortTimeout_custom" placeholder="自定义，如 500ms / 2s" style="display:none;margin-top:6px" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
           </div>
           <div class="form-group" style="max-width:190px;">
             <label>探测间隔</label>
@@ -999,7 +1002,8 @@
           </div>
           <div class="form-group" style="max-width:150px;">
             <label>读超时</label>
-            <input type="text" id="probeReadTimeout" placeholder="如 500ms / 3s，留空用默认 3s" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
+            <select id="probeReadTimeout" onchange="timeoutSelectChanged(this)"></select>
+            <input type="text" class="mode-input" id="probeReadTimeout_custom" placeholder="自定义，如 500ms / 2s" style="display:none;margin-top:6px" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
           </div>
         </div>
       </div>
@@ -1016,7 +1020,8 @@
         </div>
         <div class="form-group">
           <label>超时时长</label>
-          <input type="text" id="probeTimeout" placeholder="3 = 3秒，也可填 3s/500ms，留空用默认 3s" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
+          <select id="probeTimeout" onchange="timeoutSelectChanged(this)"></select>
+          <input type="text" class="mode-input" id="probeTimeout_custom" placeholder="自定义，如 500ms / 2s" style="display:none;margin-top:6px" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
         </div>
         <div class="form-group" style="max-width:190px;">
           <label>探测间隔</label>
@@ -2047,12 +2052,67 @@ function getIntervalValue(inputId) {
   return (mode && mode.value === "custom") ? $(inputId).value.trim() : "";
 }
 
+// 超时下拉：预设档 + 「自定义…」。空值 = 默认（不写进 TOML，由 categraf 插件决定）。
+// 关键点：历史数据里可能存在不在档位内的值（500ms / 2s 之类）。select 载不进去就会
+// 静默变成空串，保存时把原值洗掉 —— 所以回填走 setTimeoutValue()：档位里有就选档位，
+// 没有就落「自定义」并把原值填进旁边的输入框，一个值都不丢。
+const TIMEOUT_PRESETS = ["3s", "5s", "10s", "15s", "30s", "60s"];
+const TIMEOUT_FIELDS = [
+  { id: "f_probe_timeout", def: "默认（HTTP 3s / 端口 1s）" },
+  { id: "f_probe_read_timeout", def: "默认（3s）" },
+  { id: "probePortTimeout", def: "默认（1s）" },
+  { id: "probeReadTimeout", def: "默认（3s）" },
+  { id: "probeTimeout", def: "默认（3s）" },
+];
+function initTimeoutSelects() {
+  TIMEOUT_FIELDS.forEach(f => {
+    const sel = $(f.id);
+    if (!sel || sel.dataset.ready) return;
+    sel.innerHTML = `<option value="">${f.def}</option>`
+      + TIMEOUT_PRESETS.map(v => `<option value="${v}">${v}</option>`).join("")
+      + `<option value="__custom">自定义…</option>`;
+    sel.dataset.ready = "1";
+  });
+}
+function timeoutSelectChanged(sel) {
+  const inp = $(sel.id + "_custom");
+  if (!inp) return;
+  const custom = sel.value === "__custom";
+  inp.style.display = custom ? "" : "none";
+  if (custom) inp.focus();
+  else inp.value = "";   // 选回档位/默认就把自定义值清掉，免得留下看不见的残值
+}
+function setTimeoutValue(id, value) {
+  initTimeoutSelects();
+  const sel = $(id);
+  if (!sel) return;
+  const v = (value || "").trim();
+  const inp = $(id + "_custom");
+  const preset = !v || TIMEOUT_PRESETS.indexOf(v) >= 0;
+  sel.value = preset ? v : "__custom";
+  if (inp) {
+    inp.value = preset ? "" : v;
+    inp.style.display = preset ? "none" : "";
+  }
+}
+function getTimeoutValue(id) {
+  const sel = $(id);
+  if (!sel) return "";
+  if (sel.value !== "__custom") return sel.value;
+  const inp = $(id + "_custom");
+  return inp ? inp.value.trim() : "";
+}
+
 let siteDraft = null;
 const _SITE_FIELD_IDS = ["f_name","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_memo_content","f_probe_codes","f_probe_timeout","f_probe_interval","f_probe_protocol","f_probe_read_timeout","f_probe_send","f_probe_expect","f_probe_method","f_probe_follow_redirects","f_probe_headers","f_probe_body","f_probe_tls_ca"];
 
 function _readSiteFields() {
   const d = {};
   _SITE_FIELD_IDS.forEach(id => { d[id] = $(id).value; });
+  // 超时是下拉，「自定义…」档下 select.value 只是占位串 __custom：
+  // 草稿/脏检查快照里必须存真实值，否则恢复出来会在输入框里显示 "__custom"
+  d.f_probe_timeout = getTimeoutValue("f_probe_timeout");
+  d.f_probe_read_timeout = getTimeoutValue("f_probe_read_timeout");
   d.f_kind = $("f_kind").value;
   d.f_environment = $("f_environment").value;
   d.f_monitor = $("f_monitor").checked;
@@ -2063,6 +2123,9 @@ function _applySiteFields(d) {
   _SITE_FIELD_IDS.forEach(id => { $(id).value = d[id] || ""; });
   // 探测间隔是「默认/自定义」二选一：只恢复 .value 不够，单选框也得跟着回到对应档
   setIntervalMode("f_probe_interval", d.f_probe_interval || "");
+  // 超时是下拉：档位里有就选档位，没有就落「自定义」，别把旧值洗掉
+  setTimeoutValue("f_probe_timeout", d.f_probe_timeout || "");
+  setTimeoutValue("f_probe_read_timeout", d.f_probe_read_timeout || "");
   $("f_kind").value = d.f_kind || "网站";
   $("f_environment").value = d.f_environment || "生产环境";
   if (!$("f_probe_protocol").value) $("f_probe_protocol").value = "tcp";  // select 不落到空
@@ -2121,10 +2184,10 @@ function openEditSite(btn) {
   $("f_environment").value = s.env || "";
   $("f_monitor").checked = !!s.monitor;
   $("f_probe_codes").value = s.probe_status_codes || "";
-  $("f_probe_timeout").value = s.probe_timeout || "";
+  setTimeoutValue("f_probe_timeout", s.probe_timeout);
   setIntervalMode("f_probe_interval", s.probe_interval);
   $("f_probe_protocol").value = s.probe_protocol || "tcp";
-  $("f_probe_read_timeout").value = s.probe_read_timeout || "";
+  setTimeoutValue("f_probe_read_timeout", s.probe_read_timeout);
   $("f_probe_send").value = escCtl(s.probe_send || "");
   $("f_probe_expect").value = escCtl(s.probe_expect || "");
   $("f_probe_method").value = s.probe_method || "";
@@ -2186,10 +2249,10 @@ async function saveSite(btn) {
       memo_content: $("f_memo_content").value,
       monitor: $("f_monitor").checked,
       probe_status_codes: $("f_probe_codes").value.trim(),
-      probe_timeout: $("f_probe_timeout").value.trim(),
+      probe_timeout: getTimeoutValue("f_probe_timeout"),
       probe_interval: getIntervalValue("f_probe_interval"),
       probe_protocol: $("f_probe_protocol").value,
-      probe_read_timeout: $("f_probe_read_timeout").value.trim(),
+      probe_read_timeout: getTimeoutValue("f_probe_read_timeout"),
       probe_send: $("f_probe_send").value,
       probe_expect: $("f_probe_expect").value,
       probe_method: $("f_probe_method").value,
@@ -2529,7 +2592,7 @@ function toggleProbeParams(clearWhenUnchecked = false) {
   updateMonitorBtn();
   if (!checked && clearWhenUnchecked) {
     $("f_probe_codes").value = "";
-    $("f_probe_timeout").value = "";
+    setTimeoutValue("f_probe_timeout", "");
     $("f_probe_method").value = "";
     $("f_probe_follow_redirects").value = "";
     $("f_probe_headers").value = "";
@@ -2639,11 +2702,11 @@ function openProbeModal(btn) {
     : "状态码多个用 | 分隔（如 200|301），留空默认 200；超时可只填数字自动按秒（如 3 = 3s），留空不设置。探测地址：域名 &gt; 公网 &gt; 内网。TLS 选项只在探测地址是 https 时出现。";
   if (isPort) {
     $("probeProtocol").value = s.probe_protocol || "tcp";
-    $("probePortTimeout").value = s.probe_timeout || "";
+    setTimeoutValue("probePortTimeout", s.probe_timeout);
     setIntervalMode("probeInterval", s.probe_interval);
     $("probeSend").value = escCtl(s.probe_send || "");
     $("probeExpect").value = escCtl(s.probe_expect || "");
-    $("probeReadTimeout").value = s.probe_read_timeout || "";
+    setTimeoutValue("probeReadTimeout", s.probe_read_timeout);
     $("probeQuickNetAdvGroup").style.display = "none";
     $("probeQuickAdvToggle").innerHTML = icon("chev-right") + " 发送与响应匹配（高级，验证服务真实可用，UDP 判活必需）";
     updateProbeQuickUdpHint();
@@ -2659,7 +2722,7 @@ function openProbeModal(btn) {
     // 已有参数原样回填：monitor=false 但保留了拨测参数的记录（CSV 导入不校验这俩搭配）
     // 不能清空，否则用户看不到也改不了
     $("probeCodes").value = s.probe_status_codes || "200";
-    $("probeTimeout").value = s.probe_timeout || "";
+    setTimeoutValue("probeTimeout", s.probe_timeout);
     setIntervalMode("probeTimeoutInterval", s.probe_interval);
     $("probeMethod").value = s.probe_method || "";
     $("probeFollow").value = (s.probe_follow_redirects === true || s.probe_follow_redirects === false)
@@ -2688,7 +2751,7 @@ async function confirmProbeJoin(btn) {
     const s = sites.find(x => x.id === id);
     if (!s) { closeProbeModal(); return; }
     const isPort = probeModalMode === "port";
-    const timeout = isPort ? $("probePortTimeout").value.trim() : $("probeTimeout").value.trim();
+    const timeout = isPort ? getTimeoutValue("probePortTimeout") : getTimeoutValue("probeTimeout");
     const interval = isPort ? getIntervalValue("probeInterval") : getIntervalValue("probeTimeoutInterval");
     const codes = isPort ? "" : ($("probeCodes").value.trim() || "200");
     const headers = isPort ? "" : $("probeHeaders").value.trim();
@@ -2699,7 +2762,7 @@ async function confirmProbeJoin(btn) {
     }
     const overrides = { monitor: true };
     if (isPort) {
-      const readTimeout = $("probeReadTimeout").value.trim();
+      const readTimeout = getTimeoutValue("probeReadTimeout");
       if (readTimeout && !/^(\d+(ms|s|m)?)?$/.test(readTimeout)) {
         showToast("读超时格式不对：只能填数字或加 ms / s / m 单位（如 500ms / 3s）", "error"); return;
       }
