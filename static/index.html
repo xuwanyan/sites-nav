@@ -97,6 +97,10 @@
   .menu-item:hover { background: var(--c-primary-bg); color: var(--c-primary); }
   .menu-item.danger:hover { background: var(--c-prod-bg); color: var(--c-prod); }
   .menu-sep { height: 1px; background: var(--c-border-2); margin: 4px 0; }
+  /* 卡片行内的「···」菜单：复用上面的 .menu-pop / .menu-item，只把尺寸收小一号 */
+  .card-menu .menu-pop { min-width: 116px; }
+  .card-menu .menu-item { padding: 7px 10px; font-size: 12px; gap: 7px; }
+  .more-btn { padding: 4px 8px; }
   .btn {
     padding: 8px 16px;
     border: none;
@@ -110,6 +114,8 @@
     align-items: center;
     gap: 6px;
     line-height: 1.4;
+    /* 按钮文字不折行：flex 行内空间不足时，按钮整体换行，而不是被压成一字一行的竖条 */
+    white-space: nowrap;
   }
   .btn-primary { background: #1677ff; color: #fff; }
   .btn-primary:hover { background: #4096ff; }
@@ -117,9 +123,6 @@
   .btn-default:hover { border-color: #1677ff; color: #1677ff; }
   .btn-danger { background: #ff4d4f; color: #fff; }
   .btn-danger:hover { background: #ff7875; }
-  /* 卡片上的删除按钮用描边红，避免每张卡一块实心红 */
-  .btn-danger-soft { background: #fff; color: #cf1322; border: 1px solid #ffccc7; }
-  .btn-danger-soft:hover { background: #fff1f0; border-color: #ffa39e; color: #cf1322; }
   .btn-sm { padding: 4px 10px; font-size: 12px; }
   /* 禁用态：自定义样式覆盖了浏览器默认，不加这条会看不出按钮已经点了没反应 */
   .btn:disabled { opacity: .45; cursor: not-allowed; }
@@ -249,21 +252,30 @@
     border: 1px solid #f0f0f0;
     border-radius: 8px;
     margin-bottom: 8px;
-    overflow: hidden;
     background: #fff;
+    /* 这里不能加 overflow: hidden —— 列头「···」的下拉菜单会被裁掉。
+       顶部圆角改由 .env-col-head 自己兜住（见下）。 */
   }
   .env-col-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;          /* 装不下时整组换行，而不是把内部元素压到最小内容宽度 */
+    gap: 4px;
     font-size: 12px;
-    padding: 5px 10px;
+    padding: 5px 8px;
     background: #fafafa;
     border-bottom: 1px solid #f0f0f0;
+    border-radius: 8px 8px 0 0;   /* 顶部圆角自带：.env-col 已不能再用 overflow: hidden */
   }
-  .env-col-head .env-col-label { font-weight: 600; color: #1a1a1a; }
-  .env-col-head .env-col-label.prod { color: #cf1322; }
-  .env-col-head .env-col-label.test { color: #389e0d; }
+  /* 生产/测试的语义只由前面的彩色圆点承担，文字保持中性：这一行本来就有徽标和按钮，
+     再叠一层红/绿文字就是三种饱和色挤在一起，很吵 */
+  .env-col-head .env-col-label { font-weight: 600; color: var(--c-text); white-space: nowrap; }
+  /* 操作组整体贴右；空间不足时整组换行，换行后依然靠右 */
+  .env-col-actions { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-left: auto; }
+  /* 列头里的按钮收窄一点：这一行要塞下 环境标签 + 监控徽标 + 取消监控 + 「···」，
+     最窄的列内宽只有 300px 左右，默认 .btn-sm 的左右内边距会让整行差十几像素放不下 */
+  .env-col-actions .btn-sm { padding: 4px 8px; }
 
   /* 资源类型标签（卡片顶部）：浅底 + 同色字，具体色值由 JS 按类型内联 */
   .kind-tag {
@@ -332,20 +344,28 @@
     white-space: nowrap;
     color: #1a1a1a;
   }
+  /* 环境标签：底色中性，语义色只放在前面的小圆点上（与分组卡列头同一口径） */
   .env-tag {
-    padding: 2px 8px;
+    padding: 2px 6px;
     border-radius: 4px;
     font-size: 11px;
     font-weight: 600;
+    /* 同按钮：徽标文字不折行，整体换行 */
+    white-space: nowrap;
+    background: #f5f5f5;
+    color: var(--c-text-2);
   }
+  .env-tag .ic-dot { margin-right: 4px; vertical-align: middle; }
+  /* .env-prod / .env-test 现在只服务于用户管理里的角色徽标（管理员 / 普通用户）：
+     环境标签已改成「中性底色 + 彩色圆点」，不再走这两个类 */
   .env-prod { background: #fff1f0; color: #cf1322; font-weight: 600; }
   .env-test { background: #f6ffed; color: #389e0d; }
-  .env-staging { background: #fff7e6; color: #d46b08; }
-  .env-dev { background: #e6f4ff; color: #0958d9; }
-  .env-other { background: #f0f0f0; color: #595959; }
-  .env-probe { background: #f6ffed; color: #389e0d; cursor: help; font-weight: 600; }
-  .env-probe.probe-ok { background: #f6ffed; color: #389e0d; }
-  .env-probe.probe-fail { background: #fff1f0; color: #cf1322; }
+  /* 徽标底色走中性灰，健康语义由雷达图标承担；probe-ok / probe-fail 覆盖底色表示真实探测结果 */
+  .env-probe { background: #fafafa; color: var(--c-text-2); border: 1px solid var(--c-border-2); cursor: help; font-weight: 500; }
+  .env-probe .ic { color: var(--c-test); }
+  .env-probe.probe-ok { background: #f6ffed; color: #389e0d; border-color: #b7eb8f; }
+  .env-probe.probe-fail { background: #fff1f0; color: #cf1322; border-color: #ffccc7; }
+  .env-probe.probe-fail .ic { color: inherit; }
   .env-tag.env-off { background: #f5f5f5; color: #8c8c8c; font-weight: 400; }
 
   .card-urls { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
@@ -596,6 +616,7 @@
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M6 3h8l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M8 13h8M8 17h6"/></symbol>
   <symbol id="i-receipt" viewBox="0 0 24 24"><path d="M6 2h12v20l-3-2-3 2-3-2-3 2Z"/><path d="M9 7h6M9 11h6M9 15h3"/></symbol>
   <symbol id="i-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.7" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5a7 7 0 0 0 7 7 7 7 0 0 0 7-7V6Z"/></symbol>
   <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A8 8 0 1 1 11.2 3 6 6 0 0 0 21 12.8Z"/></symbol>
   <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></symbol>
@@ -1267,10 +1288,14 @@ function probeJobName(s) {
 function probeTitle(s) {
   const job = probeJobName(s);
   const st = probeStatusMap[s.id];
+  // 徽标上为了省宽度不再写「期望」二字，这里把口径补全，信息不丢
+  const cfg = hasAnyUrl(s)
+    ? `期望状态码：${s.probe_status_codes || "200"}`
+    : `探测协议：${(s.probe_protocol || "tcp").toUpperCase()}`;
   if (st) {
-    return `拨测任务「${job}」\n${st.ok ? "✓ 已同步" : "✗ 同步失败"}：${st.message}（${st.time}）`;
+    return `拨测任务「${job}」\n${cfg}\n${st.ok ? "✓ 已同步" : "✗ 同步失败"}：${st.message}（${st.time}）`;
   }
-  return `拨测任务「${job}」\n将自动加入 categraf 拨测`;
+  return `拨测任务「${job}」\n${cfg}\n将自动加入 categraf 拨测`;
 }
 
 // ==================== 渲染分类 ====================
@@ -1441,9 +1466,20 @@ function syncGroupToggle() {
     : "当前：每个环境独立一张卡（点击改为同站点名合并）";
 }
 
+// 环境标签：语义色只落在前面的圆点上，文字保持中性 —— 与分组卡列头同一口径。
+// 预发/开发是历史遗留值（后端 env 现在只允许 生产环境/测试环境），留映射是为了
+// 旧数据也有颜色，不至于掉成一个看不出含义的灰点。
+const ENV_DOT_COLOR = {
+  "生产环境": "var(--c-prod)", "测试环境": "var(--c-test)",
+  "预发": "#d46b08", "开发": "#0958d9",
+};
+function envTag(s) {
+  if (!s.env) return "";
+  const color = ENV_DOT_COLOR[s.env] || "var(--c-text-3)";
+  return `<span class="env-tag"><span class="ic-dot" style="background:${color}"></span>${escapeHtml(s.env)}</span>`;
+}
+
 function siteCard(s) {
-  const envClassMap = { "生产环境": "env-prod", "测试环境": "env-test", "预发": "env-staging", "开发": "env-dev" };
-  const envClass = envClassMap[s.env] || "env-other";
   const meta = kindMeta(s.kind || "网站");
   const body = cardBodyHtml(s);
   return `
@@ -1454,11 +1490,10 @@ function siteCard(s) {
           <span class="kind-tag" style="background:${meta.color}1a; color:${meta.color}" title="${escapeAttr(s.kind || "网站")}">${meta.icon} ${escapeHtml(s.kind || "网站")}</span>
           ${probeKindMismatchTag(s)}
           ${probeBadge(s)}
-          ${s.env ? `<span class="env-tag ${envClass}">${escapeHtml(s.env)}</span>` : ""}
+          ${envTag(s)}
           ${isAdmin() ? `<span class="card-actions">
             ${monitorBtn(s)}
-            <button class="btn btn-default btn-sm" data-edit-id="${escapeAttr(s.id)}" onclick="openEditSite(this)">${icon("edit")} 编辑</button>
-            <button class="btn btn-danger-soft btn-sm" data-del-id="${escapeAttr(s.id)}" data-del-name="${escapeAttr(s.name)}" data-del-env="${escapeAttr(s.env || "")}" onclick="openDeleteModal(this)">${icon("trash")} 删除</button>
+            ${moreMenu(s, s.env)}
           </span>` : ""}
         </span>
       </div>
@@ -1500,6 +1535,19 @@ function monitorBtn(s) {
     return `<button class="btn btn-default btn-sm" data-site-id="${escapeAttr(s.id)}" onclick="quickMonitorOff(this)">${icon("stop")} 取消监控</button>`;
   }
   return `<button class="btn btn-default btn-sm" data-site-id="${escapeAttr(s.id)}" onclick="openProbeModal(this)">${icon("radar")} 加入监控</button>`;
+}
+
+// 低频操作（编辑 / 删除）收进「···」菜单：卡片头部与列头各少两个按钮，
+// 删除这类破坏性操作也多一层遮挡，降低误点。高频的「加入/取消监控」仍留在外面（monitorBtn）。
+// env 只有删除确认弹框用得上：分组卡按列传（同一条记录的环境），独立卡片传自身的 env。
+function moreMenu(s, env) {
+  return `<span class="menu-wrap card-menu">
+    <button class="btn btn-default btn-sm more-btn" title="更多操作" aria-haspopup="true" aria-expanded="false" onclick="toggleCardMenu(event, this)">${icon("more")}</button>
+    <div class="menu-pop" role="menu">
+      <button class="menu-item" role="menuitem" data-edit-id="${escapeAttr(s.id)}" onclick="closeCardMenus();openEditSite(this)">${icon("edit")} 编辑</button>
+      <button class="menu-item danger" role="menuitem" data-del-id="${escapeAttr(s.id)}" data-del-name="${escapeAttr(s.name)}" data-del-env="${escapeAttr(env || s.env || "")}" onclick="closeCardMenus();openDeleteModal(this)">${icon("trash")} 删除</button>
+    </div>
+  </span>`;
 }
 
 // 卡片主体：URL 行 + 连接块（哪个填了显示哪个，都填都显示）；备忘录单独渲染正文
@@ -1570,10 +1618,12 @@ function probeTargetValue(s) {
   return priv;
 }
 
-// 拨测配置概要（挂在「已监控」徽标后）：HTTP 显示期望状态码，端口显示协议
+// 拨测配置概要（挂在「已监控」徽标后）：HTTP 显示期望状态码，端口显示协议。
+// 这里刻意不写「期望」二字：列头一行要塞下 环境标签 + 徽标 + 取消监控 +「···」，
+// 「期望 」大约占 26px，写上去就会把最窄的列挤成两行。语义由 probeTitle 的悬停提示补全。
 function probeCfgLabel(s) {
   if (!hasAnyUrl(s)) return ((s.probe_protocol || "tcp").toUpperCase());
-  return "期望 " + (s.probe_status_codes ? String(s.probe_status_codes) : "200");
+  return s.probe_status_codes ? String(s.probe_status_codes) : "200";
 }
 
 // 标注 kind 标签与实际探测方式不一致：kind=网站但只填连接串（实际端口拨测），
@@ -1600,13 +1650,12 @@ function envCol(env, entrySites) {
   entrySites.forEach(s => { body += `<div class="card-body">${cardBodyHtml(s)}</div>`; });
   return `<div class="env-col">
     <div class="env-col-head">
-      <span class="env-col-label ${isProd ? "prod" : "test"}">${label}</span>
-      <span style="display:flex; align-items:center; gap:10px;">
-        ${entrySites.filter(s => s.monitor).map(s =>
-          `<span class="env-tag env-probe" id="probe-${escapeAttr(s.id)}" title="${escapeAttr(probeTitle(s))}" style="font-size:11px">${icon("radar")} 已监控 · ${escapeHtml(probeCfgLabel(s))}</span>`).join("")}
+      <span class="env-col-label">${label}</span>
+      ${entrySites.filter(s => s.monitor).map(s =>
+        `<span class="env-tag env-probe" id="probe-${escapeAttr(s.id)}" title="${escapeAttr(probeTitle(s))}" style="font-size:11px">${icon("radar")} 已监控 · ${escapeHtml(probeCfgLabel(s))}</span>`).join("")}
+      <span class="env-col-actions">
         ${isAdmin() ? entrySites.map(s => monitorBtn(s)).join("") : ""}
-        ${isAdmin() ? entrySites.map(s => `<button class="btn btn-default btn-sm" data-edit-id="${escapeAttr(s.id)}" onclick="openEditSite(this)">${icon("edit")} 编辑</button>`).join("") : ""}
-        ${isAdmin() ? entrySites.map(s => `<button class="btn btn-danger btn-sm" data-del-id="${escapeAttr(s.id)}" data-del-name="${escapeAttr(s.name)}" data-del-env="${escapeAttr(env)}" onclick="openDeleteModal(this)">${icon("trash")} 删除</button>`).join("") : ""}
+        ${isAdmin() ? entrySites.map(s => moreMenu(s, env)).join("") : ""}
       </span>
     </div>
     ${body}
@@ -1813,6 +1862,26 @@ function closeAdminMenu() {
   const btn = $("adminMenuBtn");
   if (pop) pop.classList.remove("open");
   if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
+// 卡片行内的「···」菜单：与「管理 ▾」同一套交互（点按钮切换，点外部/选中项/Esc 关闭）。
+// 区别是页面上同时存在多张卡片，所以按 class 批量处理，且同时只允许开一个，
+// 否则连点几个「···」会留下好几个浮层。
+function closeCardMenus() {
+  document.querySelectorAll(".card-menu .menu-pop.open").forEach(pop => {
+    pop.classList.remove("open");
+    const btn = pop.parentElement.querySelector(".more-btn");
+    if (btn) btn.setAttribute("aria-expanded", "false");
+  });
+}
+function toggleCardMenu(e, btn) {
+  e.stopPropagation();   // 不拦的话会冒泡到 document 的「点外部关闭」，刚开就被关上
+  const pop = btn.parentElement.querySelector(".menu-pop");
+  if (!pop) return;
+  const open = !pop.classList.contains("open");
+  closeCardMenus();
+  pop.classList.toggle("open", open);
+  btn.setAttribute("aria-expanded", String(open));
 }
 
 // ==================== 批量导入 / 导出 ====================
@@ -2804,14 +2873,15 @@ function _closeModal(m) {
   if (_DRAFT_MODALS.includes(m.id) && _modalHasDraft(m) && !confirm("弹框里还有未保存的内容，确定放弃吗？")) return;
   m.classList.remove("show");
 }
-// 「管理」下拉：点页面任意处关闭（按钮自身 stopPropagation 不触发）
-document.addEventListener("click", () => closeAdminMenu());
+// 「管理」下拉与卡片「···」菜单：点页面任意处关闭（触发按钮自身 stopPropagation，不会误关）
+document.addEventListener("click", () => { closeAdminMenu(); closeCardMenus(); });
 document.querySelectorAll(".modal-overlay").forEach(m => {
   m.addEventListener("click", e => { if (e.target === m) _closeModal(m); });
 });
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   closeAdminMenu();
+  closeCardMenus();
   // 只关最上面那个。弹框 z-index 都一样，后写进 DOM 的在上层；
   // 原来一次关全部，外面开着用户管理、里面开着资源弹框时一次 Esc 两个都没了。
   const open = [...document.querySelectorAll(".modal-overlay.show")];
