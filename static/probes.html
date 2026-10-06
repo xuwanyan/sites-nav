@@ -408,20 +408,26 @@ function renderProbes() {
     const kindTag = isHttp
       ? `<span class="tag">HTTP</span>`
       : `<span class="tag">${(p.protocol === "udp" ? "UDP" : "TCP")}</span>`;
-    // 检查项：HTTP 显示期望状态码，端口显示 期望响应（无则仅连通）
+    // 期望结果：HTTP 显示期望状态码，端口显示 期望响应（没填就是只测连通）
     const check = isHttp
       ? `<span class="mono">${escapeHtml(p.expected_status_codes || "200")}</span>`
       : (p.expect
           ? `<span class="mono" title="${escapeHtml(p.expect)}">${escapeHtml(escCtl(p.expect))}</span>`
-          : `<span style="color:#bfbfbf">—</span>`);
+          : `<span style="color:#bfbfbf">仅连通</span>`);
     // 方法/协议：HTTP 显示请求方法，端口显示协议
     const method = isHttp
       ? `<span class="tag">${escapeHtml(p.method || "GET")}</span>`
       : kindTag;
-    // 超时：HTTP 用 response_timeout，端口用 timeout；都不填显示「默认」
+    // 超时：HTTP 用 response_timeout，端口用 timeout；没填就显示「默认」，
+    // 具体数值放进 title —— categraf 插件里的默认是 HTTP 3s / 端口 1s，
+    // 不写出来的话用户只能自己去翻 categraf 源码才知道「默认」是多少
     const timeout = isHttp
-      ? `<span class="mono">${escapeHtml(p.response_timeout || "默认")}</span>`
-      : `<span class="mono">${escapeHtml(p.timeout || "默认")}</span>`;
+      ? (p.response_timeout
+          ? `<span class="mono">${escapeHtml(p.response_timeout)}</span>`
+          : `<span class="mono" title="未设置，取 categraf http_response 插件默认值 3s">默认</span>`)
+      : (p.timeout
+          ? `<span class="mono">${escapeHtml(p.timeout)}</span>`
+          : `<span class="mono" title="未设置，取 categraf net_response 插件默认值 1s">默认</span>`);
     // 发送内容：仅端口拨测有（HTTP 拨测不适用，留空占位保持列对齐）
     const send = isHttp
       ? `<td style="color:#bfbfbf">—</td>`
@@ -433,7 +439,9 @@ function renderProbes() {
     <td>${escapeHtml(p.job || "")}</td>
     <td>${check}</td>
     <td class="mono">${timeout}</td>
-    <td class="mono">${escapeHtml(p.interval || "默认")}</td>
+    <td class="mono">${p.interval
+      ? escapeHtml(p.interval)
+      : `<span title="未设置，取 categraf 全局 interval（默认 15s，可在 categraf 侧 config.toml 修改）">默认</span>`}</td>
     ${send}
   </tr>`;
   }).join("");
@@ -441,7 +449,7 @@ function renderProbes() {
     <div class="card-title">拨测目标 <span class="count">(${probes.length})</span></div>
     <table>
       <thead><tr>
-        <th>类型</th><th>目标</th><th>方法/协议</th><th>名称</th><th>检查</th><th>超时</th><th>检测间隔</th><th>发送内容</th>
+        <th>类型</th><th>目标</th><th>方法/协议</th><th>名称</th><th>期望结果</th><th>超时</th><th>探测间隔</th><th>发送内容</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>

@@ -128,7 +128,7 @@ COMPOSE_PROFILES=builtin-mysql docker compose exec -T mysql sh -c \
 
 运维模式下每张卡片有「加入监控 / 取消监控」快捷按钮，无需打开编辑弹窗：
 
-- 点「加入监控」→ 填 **期望状态码**（3 位数字，多个用 `|` 分隔如 `200|301`，留空默认 `200`）和 **超时时长**（如 `3s` / `500ms` / `1m`，留空不设置）→ 确认后自动成为 categraf `http_response` 拨测目标
+- 点「加入监控」→ 填 **期望状态码**（3 位数字，多个用 `|` 分隔如 `200|301`，留空默认 `200`）和 **超时时长**（如 `3s` / `500ms` / `1m`，留空则用 categraf 插件默认 **3s**）→ 确认后自动成为 categraf `http_response` 拨测目标
 - 两个参数保存在站点记录中，编辑弹窗勾选「拨测监控」后可查看和修改
 - **写站点即生效**：拨测目标从站点数据实时生成，categraf 下次拉取时自动包含，无需额外同步
 
@@ -169,7 +169,7 @@ sites-nav 直接作为 categraf 的 `http_provider`，同时下发两类拨测�
 - 探测地址优先级：**域名 > 公网地址 > 内网地址**（无 scheme 时补 `http://`）
 - 拨测 job 名 = 系统名称 + 环境后缀（`-生产环境` / `-测试环境`）
 - 期望状态码：默认 `200`，支持 `200|301` 多值；格式校验 `^\d{3}(\|\d{3})*$`
-- 超时时长：留空不设置（categraf 用默认值）
+- 超时时长：留空不写进 TOML，由 categraf `http_response` 插件取默认值 **3s**
 - 细粒度配置（请求方法 / 请求头 / Body / 跟随重定向 / 私有 CA / 跳过证书校验）见上方「HTTP 拨测高级配置」
 - 取消勾选或删除系统时，拨测目标自动消失（下次 categraf 拉取时不再包含）
 
@@ -184,14 +184,28 @@ sites-nav 直接作为 categraf 的 `http_provider`，同时下发两类拨测�
 | 目标地址 | `host:port` 格式，如 `10.0.0.1:22` |
 | 协议 | TCP / UDP |
 | 名称 | 用于 `[mappings]` 中的 job 标签 |
-| 连接超时 | 对应 `timeout`，空则用 categraf 默认 1s |
+| 连接超时 | 对应 `timeout`，空则用 `net_response` 插件默认 **1s** |
 | 发送内容 (send) | 建连后发送的字符串，支持 `\r` `\n` `\t` 转义 |
-| 期望响应包含 (expect) | 响应中需包含的字符串，不填则仅检测连通 |
-| 读超时 (read_timeout) | 配合 send/expect 的读超时，空则用默认 3s |
+| 期望响应包含 (expect) | 响应中需包含的字符串，不填则仅检测连通（`/probes` 页的「期望结果」列显示为「仅连通」） |
+| 读超时 (read_timeout) | 配合 send/expect 的读超时，空则用 `net_response` 插件默认 **3s** |
 
 > ⚠️ UDP 是无连接协议，不配 send/expect 时"发包不报错即算成功"，判活不可靠；UDP 目标请务必配置 send/expect。
 
 **告警建议**：net_response 用 `result_code != 0` 告警（0=成功 1=超时 2=连接失败 3=读失败 4=expect 不匹配）。
+
+### 拨测超时 / 间隔的默认值
+
+下面几项留空时不会写进 TOML，由 categraf 自己取默认值。数值来自 categraf 源码（`inputs/http_response/http_response.go`、`inputs/net_response/net_response.go`、`config/config.go`），列在这里省得每次都去翻：
+
+| 字段 | 适用 | 默认值 | 出处 |
+|------|------|--------|------|
+| `response_timeout` | HTTP 拨测 · 超时 | **3s** | 插件内写死：不足 1s 即取 3s |
+| `timeout` | 端口拨测 · 连接超时 | **1s** | 插件内写死：为 0 即取 1s |
+| `read_timeout` | 端口拨测 · 读超时 | **3s** | 插件内写死：为 0 即取 3s |
+| `interval` | 两类拨测 · 探测间隔 | **15s** | ⚠️ 这是 categraf **全局** `interval` 的兜底值，实际以 categraf `conf/config.toml` 里的 `interval` 为准 |
+
+> 前三个是插件里的常量，写死不会变；只有 `interval` 取决于 categraf 侧的全局配置。
+> `/probes` 页的「超时」「探测间隔」列在这些字段没填时显示「默认」，鼠标悬停即可看到上表的数值。
 
 ### categraf 配置
 
