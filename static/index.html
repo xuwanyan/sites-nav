@@ -513,6 +513,22 @@
   }
   .form-group textarea { resize: vertical; min-height: 60px; }
   .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  /* 「默认 / 自定义」二选一（探测间隔这类由引擎决定默认值的字段）：选「默认」就把输入框禁掉。
+     手填一个恰好等于默认值的数并不会更"明确" —— 它会让该目标脱离同画像的分组、
+     单独成一条 [[instances]]，行为却完全一样，纯属给配置添噪声。 */
+  .mode-pick { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+  .form-group .mode-pick label {
+    display: flex; align-items: center; gap: 5px; margin: 0;
+    font-size: 12px; font-weight: 400; color: var(--c-text-2); cursor: pointer;
+  }
+  /* 覆盖 .form-group input 的 width:100% + 边框：单选钮不需要这些 */
+  .form-group .mode-pick input[type="radio"] {
+    width: 13px; height: 13px; min-width: 0; padding: 0; margin: 0;
+    border: none; box-shadow: none; cursor: pointer; accent-color: var(--c-primary);
+  }
+  .form-group input.mode-input:disabled {
+    background: #f5f5f5; color: var(--c-text-4); cursor: not-allowed;
+  }
   .modal-footer {
     padding: 16px 24px;
     border-top: 1px solid #f0f0f0;
@@ -769,9 +785,13 @@
           <label>超时时长</label>
           <input type="text" id="f_probe_timeout" placeholder="如 3s / 500ms，纯数字按秒，留空用默认 3s（端口拨测 1s）">
         </div>
-        <div class="form-group" style="max-width:150px;">
+        <div class="form-group" style="max-width:190px;">
           <label>探测间隔</label>
-          <input type="text" id="f_probe_interval" placeholder="如 30s / 500ms / 1m，留空用全局默认 15s" title="留空则不写进 TOML，由 categraf 全局 interval 决定（默认 15s，以 categraf conf/config.toml 里的值为准）">
+          <div class="mode-pick" title="默认：不写进 TOML，由 categraf 全局 interval 决定（默认 15s，以 categraf conf/config.toml 里的值为准）">
+            <label><input type="radio" name="f_probe_interval_mode" value="default" data-input="f_probe_interval" onchange="intervalModeChanged(this)" checked> 默认 15s</label>
+            <label><input type="radio" name="f_probe_interval_mode" value="custom" data-input="f_probe_interval" onchange="intervalModeChanged(this)"> 自定义</label>
+          </div>
+          <input type="text" class="mode-input" id="f_probe_interval" placeholder="如 30s / 500ms / 1m" disabled>
         </div>
       </div>
       <!-- 端口拨测高级：发送与响应匹配（对齐原 categraf-http-admin） -->
@@ -955,9 +975,13 @@
             <label>连接超时时间</label>
             <input type="text" id="probePortTimeout" placeholder="如 3s / 500ms，留空用默认 1s" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
           </div>
-          <div class="form-group" style="max-width:150px;">
+          <div class="form-group" style="max-width:190px;">
             <label>探测间隔</label>
-            <input type="text" id="probeInterval" placeholder="如 30s / 500ms / 1m，留空用全局默认 15s" title="留空则不写进 TOML，由 categraf 全局 interval 决定（默认 15s，以 categraf conf/config.toml 里的值为准）" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
+            <div class="mode-pick" title="默认：不写进 TOML，由 categraf 全局 interval 决定（默认 15s，以 categraf conf/config.toml 里的值为准）">
+              <label><input type="radio" name="probeInterval_mode" value="default" data-input="probeInterval" onchange="intervalModeChanged(this)" checked> 默认 15s</label>
+              <label><input type="radio" name="probeInterval_mode" value="custom" data-input="probeInterval" onchange="intervalModeChanged(this)"> 自定义</label>
+            </div>
+            <input type="text" class="mode-input" id="probeInterval" placeholder="如 30s / 500ms / 1m" onkeydown="if(event.key==='Enter')confirmProbeJoin()" disabled>
           </div>
         </div>
         <div id="probeQuickUdpHint" style="display:none;font-size:12px;color:#cf1322;margin:8px 0 2px"><svg class="ic"><use href="#i-alert"/></svg> UDP 无连接：不配置下方「发送与响应匹配」时判活不可靠，强烈建议配置</div>
@@ -994,9 +1018,13 @@
           <label>超时时长</label>
           <input type="text" id="probeTimeout" placeholder="3 = 3秒，也可填 3s/500ms，留空用默认 3s" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
         </div>
-        <div class="form-group" style="max-width:150px;">
+        <div class="form-group" style="max-width:190px;">
           <label>探测间隔</label>
-          <input type="text" id="probeTimeoutInterval" placeholder="如 30s / 500ms / 1m，留空用全局默认 15s" title="留空则不写进 TOML，由 categraf 全局 interval 决定（默认 15s，以 categraf conf/config.toml 里的值为准）" onkeydown="if(event.key==='Enter')confirmProbeJoin()">
+          <div class="mode-pick" title="默认：不写进 TOML，由 categraf 全局 interval 决定（默认 15s，以 categraf conf/config.toml 里的值为准）">
+            <label><input type="radio" name="probeTimeoutInterval_mode" value="default" data-input="probeTimeoutInterval" onchange="intervalModeChanged(this)" checked> 默认 15s</label>
+            <label><input type="radio" name="probeTimeoutInterval_mode" value="custom" data-input="probeTimeoutInterval" onchange="intervalModeChanged(this)"> 自定义</label>
+          </div>
+          <input type="text" class="mode-input" id="probeTimeoutInterval" placeholder="如 30s / 500ms / 1m" onkeydown="if(event.key==='Enter')confirmProbeJoin()" disabled>
         </div>
         <div class="form-group" style="max-width:130px;">
           <label>请求方法</label>
@@ -1990,6 +2018,35 @@ function doExport(format) {
 // 存成草稿；重新打开「新增资源」时回填。比弹 confirm 强 —— 确认框只能「放弃」或「留下」，
 // 草稿让你关掉再打开接着填。
 // 编辑模式不走草稿：它总是从数据库记录加载，草稿会污染编辑结果，所以 openEditSite 会清掉它。
+
+// 「默认 / 自定义」二选一：探测间隔留空即由 categraf 全局决定（默认 15s）。
+// 手填一个恰好等于默认值的数并不会更"明确" —— 它会让该目标脱离同画像的分组、
+// 单独成一条 [[instances]]，行为却完全一样，纯属给配置添噪声。默认档直接把输入框禁掉。
+function intervalModeChanged(radio) {
+  const input = $(radio.dataset.input);
+  if (!input) return;
+  const custom = radio.value === "custom";
+  input.disabled = !custom;
+  if (custom) input.focus();
+  else input.value = "";   // 选回默认就清空，免得留下一个看不见却会被读走的残值
+}
+// 回填：有值就是自定义档。单选框和输入框必须一起恢复，否则会出现「显示默认、框里却有值」
+function setIntervalMode(inputId, value) {
+  const input = $(inputId);
+  if (!input) return;
+  const v = (value || "").trim();
+  input.value = v;
+  document.querySelectorAll(`input[name="${inputId}_mode"]`).forEach(r => {
+    r.checked = (r.value === "custom") === !!v;
+  });
+  input.disabled = !v;
+}
+// 取值：默认档一律返回空串（= 不写进 TOML），不看输入框里有没有残值
+function getIntervalValue(inputId) {
+  const mode = document.querySelector(`input[name="${inputId}_mode"]:checked`);
+  return (mode && mode.value === "custom") ? $(inputId).value.trim() : "";
+}
+
 let siteDraft = null;
 const _SITE_FIELD_IDS = ["f_name","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_memo_content","f_probe_codes","f_probe_timeout","f_probe_interval","f_probe_protocol","f_probe_read_timeout","f_probe_send","f_probe_expect","f_probe_method","f_probe_follow_redirects","f_probe_headers","f_probe_body","f_probe_tls_ca"];
 
@@ -2004,6 +2061,8 @@ function _readSiteFields() {
 }
 function _applySiteFields(d) {
   _SITE_FIELD_IDS.forEach(id => { $(id).value = d[id] || ""; });
+  // 探测间隔是「默认/自定义」二选一：只恢复 .value 不够，单选框也得跟着回到对应档
+  setIntervalMode("f_probe_interval", d.f_probe_interval || "");
   $("f_kind").value = d.f_kind || "网站";
   $("f_environment").value = d.f_environment || "生产环境";
   if (!$("f_probe_protocol").value) $("f_probe_protocol").value = "tcp";  // select 不落到空
@@ -2063,7 +2122,7 @@ function openEditSite(btn) {
   $("f_monitor").checked = !!s.monitor;
   $("f_probe_codes").value = s.probe_status_codes || "";
   $("f_probe_timeout").value = s.probe_timeout || "";
-  $("f_probe_interval").value = s.probe_interval || "";
+  setIntervalMode("f_probe_interval", s.probe_interval);
   $("f_probe_protocol").value = s.probe_protocol || "tcp";
   $("f_probe_read_timeout").value = s.probe_read_timeout || "";
   $("f_probe_send").value = escCtl(s.probe_send || "");
@@ -2128,7 +2187,7 @@ async function saveSite(btn) {
       monitor: $("f_monitor").checked,
       probe_status_codes: $("f_probe_codes").value.trim(),
       probe_timeout: $("f_probe_timeout").value.trim(),
-      probe_interval: $("f_probe_interval").value.trim(),
+      probe_interval: getIntervalValue("f_probe_interval"),
       probe_protocol: $("f_probe_protocol").value,
       probe_read_timeout: $("f_probe_read_timeout").value.trim(),
       probe_send: $("f_probe_send").value,
@@ -2581,7 +2640,7 @@ function openProbeModal(btn) {
   if (isPort) {
     $("probeProtocol").value = s.probe_protocol || "tcp";
     $("probePortTimeout").value = s.probe_timeout || "";
-    $("probeInterval").value = s.probe_interval || "";
+    setIntervalMode("probeInterval", s.probe_interval);
     $("probeSend").value = escCtl(s.probe_send || "");
     $("probeExpect").value = escCtl(s.probe_expect || "");
     $("probeReadTimeout").value = s.probe_read_timeout || "";
@@ -2601,7 +2660,7 @@ function openProbeModal(btn) {
     // 不能清空，否则用户看不到也改不了
     $("probeCodes").value = s.probe_status_codes || "200";
     $("probeTimeout").value = s.probe_timeout || "";
-    $("probeTimeoutInterval").value = s.probe_interval || "";
+    setIntervalMode("probeTimeoutInterval", s.probe_interval);
     $("probeMethod").value = s.probe_method || "";
     $("probeFollow").value = (s.probe_follow_redirects === true || s.probe_follow_redirects === false)
       ? String(s.probe_follow_redirects) : "";
@@ -2630,7 +2689,7 @@ async function confirmProbeJoin(btn) {
     if (!s) { closeProbeModal(); return; }
     const isPort = probeModalMode === "port";
     const timeout = isPort ? $("probePortTimeout").value.trim() : $("probeTimeout").value.trim();
-    const interval = isPort ? $("probeInterval").value.trim() : $("probeTimeoutInterval").value.trim();
+    const interval = isPort ? getIntervalValue("probeInterval") : getIntervalValue("probeTimeoutInterval");
     const codes = isPort ? "" : ($("probeCodes").value.trim() || "200");
     const headers = isPort ? "" : $("probeHeaders").value.trim();
     if (!validProbeParams(codes, timeout, headers)) return;
