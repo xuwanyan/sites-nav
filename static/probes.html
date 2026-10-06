@@ -45,19 +45,24 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
   }
 
-  table { width: 100%; border-collapse: separate; border-spacing: 0; background: #fff; border-radius: 10px; border: 1px solid #e8e8e8; }
-  th, td { padding: 12px 14px; text-align: left; font-size: 13px; border-bottom: 1px solid #f0f0f0; }
   :root { --hd-h: 63px; }
-  th { background: #fafafa; font-weight: 600; color: #666; font-size: 12px; white-space: nowrap; position: sticky; top: var(--hd-h); z-index: 5; }
-  thead th { box-shadow: 0 1px 0 #e8e8e8; }
-  tr:hover td { background: #f9f9f9; }
-  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
-  .tag {
-    display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 500;
+  .card {
+    background: #fff; border: 1px solid #f0f0f0; border-radius: 8px;
+    padding: 20px 24px 8px; box-shadow: 0 1px 2px rgba(0,0,0,.03);
   }
-  .tag-tcp { background: #e6f4ff; color: #1677ff; }
-  .tag-udp { background: #fff7e6; color: #fa8c16; }
-  .tag-http { background: #f6ffed; color: #389e0d; }
+  .card-title { font-size: 16px; font-weight: 600; color: #1f1f1f; margin-bottom: 16px; }
+  .card-title .count { color: #8c8c8c; font-weight: 500; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; }
+  th, td { padding: 13px 16px; text-align: left; font-size: 14px; vertical-align: middle; border-bottom: 1px solid #f0f0f0; }
+  th { background: #fafafa; font-weight: 500; color: #8c8c8c; font-size: 13px; white-space: nowrap; position: sticky; top: var(--hd-h); z-index: 5; }
+  tbody tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #fafafa; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  .url { word-break: break-all; color: #1f1f1f; }
+  .tag {
+    display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 12px;
+    font-weight: 500; line-height: 20px; background: #e6f4ff; color: #1677ff;
+  }
 
   .empty-state { text-align: center; padding: 60px 20px; color: #999; }
   .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
@@ -361,23 +366,23 @@ function copyAllToml() {
 
 function renderProbes() {
   if (!probes.length) {
-    $("content").innerHTML = `<div class="empty-state"><div class="icon">📡</div><p>暂无拨测目标</p><p style="font-size:12px; margin-top:8px; color:#bbb;">到首页站点填写页为资源勾选「拨测监控」即可生成</p></div>`;
+    $("content").innerHTML = `<div class="card"><div class="empty-state"><div class="icon">📡</div><p>暂无拨测目标</p><p style="font-size:12px; margin-top:8px; color:#bbb;">到首页站点填写页为资源勾选「拨测监控」即可生成</p></div></div>`;
     return;
   }
   const rows = probes.map(p => {
     const isHttp = p.kind === "http";
     const kindTag = isHttp
-      ? `<span class="tag tag-http">HTTP</span>`
-      : `<span class="tag tag-${p.protocol === "udp" ? "udp" : "tcp"}">${(p.protocol === "udp" ? "UDP" : "TCP")}</span>`;
+      ? `<span class="tag">HTTP</span>`
+      : `<span class="tag">${(p.protocol === "udp" ? "UDP" : "TCP")}</span>`;
     // 检查项：HTTP 显示期望状态码，端口显示 期望响应（无则仅连通）
     const check = isHttp
       ? `<span class="mono">${escapeHtml(p.expected_status_codes || "200")}</span>`
       : (p.expect
           ? `<span class="mono" title="${escapeHtml(p.expect)}">${escapeHtml(escCtl(p.expect))}</span>`
-          : `<span style="color:#bbb">—</span>`);
+          : `<span style="color:#bfbfbf">—</span>`);
     // 方法/协议：HTTP 显示请求方法，端口显示协议
     const method = isHttp
-      ? `<span class="mono">${escapeHtml(p.method || "GET")}</span>`
+      ? `<span class="tag">${escapeHtml(p.method || "GET")}</span>`
       : kindTag;
     // 超时：HTTP 用 response_timeout，端口用 timeout；都不填显示「默认」
     const timeout = isHttp
@@ -385,11 +390,11 @@ function renderProbes() {
       : `<span class="mono">${escapeHtml(p.timeout || "默认")}</span>`;
     // 发送内容：仅端口拨测有（HTTP 拨测不适用，留空占位保持列对齐）
     const send = isHttp
-      ? `<td style="color:#bbb">—</td>`
+      ? `<td style="color:#bfbfbf">—</td>`
       : `<td class="mono" title="${escapeHtml(p.send || "")}">${escapeHtml(escCtl(p.send || "—"))}</td>`;
     return `<tr>
     <td>${kindTag}</td>
-    <td class="mono">${escapeHtml(p.url)}</td>
+    <td class="mono url">${escapeHtml(p.url)}</td>
     <td>${method}</td>
     <td>${escapeHtml(p.job || "")}</td>
     <td>${check}</td>
@@ -398,12 +403,15 @@ function renderProbes() {
     ${send}
   </tr>`;
   }).join("");
-  $("content").innerHTML = `<table>
-    <thead><tr>
-      <th>类型</th><th>目标地址</th><th>方法/协议</th><th>名称</th><th>检查</th><th>超时</th><th>检测间隔</th><th>发送内容</th>
-    </tr></thead>
-    <tbody>${rows}</tbody>
-  </table>`;
+  $("content").innerHTML = `<div class="card">
+    <div class="card-title">拨测目标 <span class="count">(${probes.length})</span></div>
+    <table>
+      <thead><tr>
+        <th>类型</th><th>目标</th><th>方法/协议</th><th>名称</th><th>检查</th><th>超时</th><th>检测间隔</th><th>发送内容</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
 }
 
 function openAddModal() {

@@ -75,6 +75,9 @@
   .btn-default:hover { border-color: #1677ff; color: #1677ff; }
   .btn-danger { background: #ff4d4f; color: #fff; }
   .btn-danger:hover { background: #ff7875; }
+  /* 卡片上的删除按钮用描边红，避免每张卡一块实心红 */
+  .btn-danger-soft { background: #fff; color: #cf1322; border: 1px solid #ffccc7; }
+  .btn-danger-soft:hover { background: #fff1f0; border-color: #ffa39e; color: #cf1322; }
   .btn-sm { padding: 4px 10px; font-size: 12px; }
   /* 禁用态：自定义样式覆盖了浏览器默认，不加这条会看不出按钮已经点了没反应 */
   .btn:disabled { opacity: .45; cursor: not-allowed; }
@@ -118,31 +121,25 @@
   .cat-tag {
     padding: 6px 14px;
     background: #fff;
-    border: 1px solid #d9d9d9;
+    border: 1px solid #e8e8e8;
     border-radius: 16px;
     font-size: 13px;
+    color: #595959;
     cursor: pointer;
     transition: all 0.2s;
     user-select: none;
   }
-  .cat-tag:hover { border-color: #1677ff; color: #1677ff; }
-  .cat-tag.active { background: #1677ff; color: #fff; border-color: #1677ff; }
-  /* 环境标签配色：生产醒目（红底白字常显），测试绿色 */
-  .cat-tag.tag-prod { border-color: #ff4d4f; color: #ff4d4f; font-weight: 600; background: #fff1f0; }
-  .cat-tag.tag-prod.active { background: #ff4d4f; color: #fff; box-shadow: 0 2px 8px rgba(255,77,79,.35); }
-  .cat-tag.tag-test { border-color: #52c41a; color: #52c41a; }
-  .cat-tag.tag-test.active { background: #52c41a; color: #fff; }
-  /* 协议标签配色：用青色系与环境(红/绿/蓝)、监控(灰)区分，避免跨组颜色混淆 */
-  .cat-tag.tag-http { border-color: #13c2c2; color: #08979c; background: #e6fffb; }
-  .cat-tag.tag-http.active { background: #13c2c2; color: #fff; border-color: #13c2c2; }
-  .cat-tag.tag-net { border-color: #722ed1; color: #722ed1; background: #f9f0ff; }
-  .cat-tag.tag-net.active { background: #722ed1; color: #fff; border-color: #722ed1; }
-  .cat-tag.tag-dim { opacity: .45; cursor: not-allowed; }
-  /* 监控状态：已监控用填充绿（醒目），未监控灰 */
-  .cat-tag.tag-mon { border-color: #52c41a; color: #389e0d; background: #f6ffed; }
-  .cat-tag.tag-mon.active { background: #52c41a; color: #fff; border-color: #52c41a; }
-  .cat-tag.tag-unmon { border-color: #8c8c8c; color: #595959; }
-  .cat-tag.tag-unmon.active { background: #595959; color: #fff; border-color: #595959; }
+  .cat-tag:hover { border-color: #bfbfbf; color: #1f1f1f; }
+  /* 选中态一律「浅底 + 同色字」，不用高饱和填充，避免整屏花 */
+  .cat-tag.active { background: #e6f4ff; color: #0958d9; border-color: #91caff; }
+  .cat-tag.tag-prod.active { background: #fff1f0; color: #cf1322; border-color: #ffccc7; }
+  .cat-tag.tag-test.active { background: #f6ffed; color: #389e0d; border-color: #b7eb8f; }
+  .cat-tag.tag-http.active { background: #e6fffb; color: #08979c; border-color: #87e8de; }
+  .cat-tag.tag-net.active { background: #f9f0ff; color: #722ed1; border-color: #d3adf7; }
+  .cat-tag.tag-mon.active { background: #f6ffed; color: #389e0d; border-color: #b7eb8f; }
+  .cat-tag.tag-unmon.active { background: #f5f5f5; color: #595959; border-color: #d9d9d9; }
+  /* 计数为 0 的协议项置灰不可点；已选中时不置灰 */
+  .cat-tag.tag-dim:not(.active) { opacity: .45; cursor: not-allowed; }
 
   /* ── 布局A：左侧分类目录 + 右侧内容网格 ── */
   :root { --head-h: 61px; }
@@ -225,9 +222,9 @@
   .env-col-head .env-col-label.prod { color: #cf1322; }
   .env-col-head .env-col-label.test { color: #389e0d; }
 
-  /* 资源类型标签（卡片顶部） */
+  /* 资源类型标签（卡片顶部）：浅底 + 同色字，具体色值由 JS 按类型内联 */
   .kind-tag {
-    font-size: 11px; padding: 1px 7px; border-radius: 4px; color: #fff;
+    font-size: 11px; padding: 1px 7px; border-radius: 4px; color: #595959; background: #f5f5f5;
     font-weight: 500; flex-shrink: 0; white-space: nowrap;
     max-width: 120px; overflow: hidden; text-overflow: ellipsis;
   }
@@ -298,7 +295,7 @@
     font-size: 11px;
     font-weight: 600;
   }
-  .env-prod { background: #ff4d4f; color: #fff; font-weight: 600; box-shadow: 0 1px 4px rgba(255,77,79,.35); }
+  .env-prod { background: #fff1f0; color: #cf1322; font-weight: 600; }
   .env-test { background: #f6ffed; color: #389e0d; }
   .env-staging { background: #fff7e6; color: #d46b08; }
   .env-dev { background: #e6f4ff; color: #0958d9; }
@@ -324,9 +321,8 @@
     font-weight: 500;
     flex-shrink: 0;
   }
-  .url-label.public { background: #e6f4ff; color: #0958d9; }
-  .url-label.internal { background: #f9f0ff; color: #531dab; }
-  .url-label.domain { background: #e6fffb; color: #08979c; }
+  /* URL 行前缀标签统一中性灰，避免 域名/公网/内网 三种色块叠加显花 */
+  .url-label.public, .url-label.internal, .url-label.domain { background: #f5f5f5; color: #595959; }
   .url-row a {
     color: #1677ff;
     text-decoration: none;
@@ -1176,7 +1172,7 @@ function renderCategories() {
     const label = e === "全部" ? "🌐 全部环境" : (e === "生产环境" ? "🔴 生产环境" : "🟢 测试环境");
     return `<span class="cat-tag ${envCls[e] || ""} ${e === activeEnv ? "active" : ""}" onclick="filterEnv('${e}')">${label} <small>(${n})</small></span>`;
   }).join("") + `
-  <span style="display:inline-block; width:1px; height:20px; background:#444; margin:0 8px; vertical-align:middle;"></span>
+  <span style="display:inline-block; width:1px; height:20px; background:#e8e8e8; margin:0 8px; vertical-align:middle;"></span>
   ${["全部", "HTTP", "TCP", "UDP"].map(p => {
     const n = protocolCount(p);
     const ctx = p === "全部" ? "tag-dim" : (p === "HTTP" ? "tag-http" : "tag-net");
@@ -1186,7 +1182,7 @@ function renderCategories() {
     const tag = `cat-tag ${ctx} ${p === activeProtocol ? "active" : ""}${dead ? "tag-dim" : ""}`;
     return `<span class="${tag.trim()}" ${dead ? "" : `onclick="filterProtocol('${p}')"`} title="${dead ? "暂无该协议监控目标" : ""}">${ic} <small>(${n})</small></span>`;
   }).join("")}
-  <span style="display:inline-block; width:1px; height:20px; background:#444; margin:0 8px; vertical-align:middle;"></span>
+  <span style="display:inline-block; width:1px; height:20px; background:#e8e8e8; margin:0 8px; vertical-align:middle;"></span>
   ${["已监控", "未监控"].map(m => {
     const n = sites.filter(s => m === "已监控" ? !!s.monitor : (!s.monitor && (s.domain || s.public_url || s.private_url || s.connection))).length;
     const ic = m === "已监控" ? "📡" : "💤";
@@ -1338,18 +1334,18 @@ function siteCard(s) {
   const meta = kindMeta(s.kind || "网站");
   const body = cardBodyHtml(s);
   return `
-    <div class="card" style="border-top-color:${meta.color}">
+    <div class="card">
       <div class="card-header">
         <span class="card-name">${escapeHtml(s.name)}</span>
         <span style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-          <span class="kind-tag" style="background:${meta.color}" title="${escapeAttr(s.kind || "网站")}">${meta.icon} ${escapeHtml(s.kind || "网站")}</span>
+          <span class="kind-tag" style="background:${meta.color}1a; color:${meta.color}" title="${escapeAttr(s.kind || "网站")}">${meta.icon} ${escapeHtml(s.kind || "网站")}</span>
           ${probeKindMismatchTag(s)}
           ${probeBadge(s)}
           ${s.env ? `<span class="env-tag ${envClass}">${escapeHtml(s.env)}</span>` : ""}
           ${isAdmin() ? `<span class="card-actions">
             ${monitorBtn(s)}
             <button class="btn btn-default btn-sm" data-edit-id="${escapeAttr(s.id)}" onclick="openEditSite(this)">✏️ 编辑</button>
-            <button class="btn btn-danger btn-sm" data-del-id="${escapeAttr(s.id)}" data-del-name="${escapeAttr(s.name)}" data-del-env="${escapeAttr(s.env || "")}" onclick="openDeleteModal(this)">🗑️ 删除</button>
+            <button class="btn btn-danger-soft btn-sm" data-del-id="${escapeAttr(s.id)}" data-del-name="${escapeAttr(s.name)}" data-del-env="${escapeAttr(s.env || "")}" onclick="openDeleteModal(this)">🗑️ 删除</button>
           </span>` : ""}
         </span>
       </div>
@@ -1474,10 +1470,10 @@ function probeKindMismatchTag(s) {
   const isNet = !hasAnyUrl(s) && !!(s.connection || "").trim();
   const isHttp = hasAnyUrl(s);
   if (k === "网站" && isNet) {
-    return `<span class="kind-tag" style="background:#faad14;color:#fff" title="该记录资源类型标为「网站」，但只填了连接串，实际走端口(TCP/UDP)拨测">⚠ 实际端口拨测</span>`;
+    return `<span class="kind-tag" style="background:#fff7e6;color:#d46b08" title="该记录资源类型标为「网站」，但只填了连接串，实际走端口(TCP/UDP)拨测">⚠ 实际端口拨测</span>`;
   }
   if (k === "非网站" && isHttp) {
-    return `<span class="kind-tag" style="background:#1677ff;color:#fff" title="该记录资源类型标为「非网站」，但填了 URL，实际走 HTTP 拨测">⚠ 实际HTTP拨测</span>`;
+    return `<span class="kind-tag" style="background:#e6f4ff;color:#0958d9" title="该记录资源类型标为「非网站」，但填了 URL，实际走 HTTP 拨测">⚠ 实际HTTP拨测</span>`;
   }
   return "";
 }
@@ -1513,7 +1509,6 @@ function groupCard(group, gi) {
   const { name, envs, sites } = group;
   const sample = sites[0];
   const meta = kindMeta(sample.kind || "网站");
-  const color = meta.color;
   const shown = activeEnv === "全部" ? ["生产环境", "测试环境"] : [activeEnv];
   const cols = shown
     .filter(e => envs.has(e))
@@ -1525,7 +1520,7 @@ function groupCard(group, gi) {
     (sample.owner || "").trim() ? `👤 ${sample.owner.trim()}` : "",
   ].filter(Boolean);
   const sub = subParts.length ? `<span class="head-sub">${escapeHtml(subParts.join(" · "))}</span>` : "";
-  return `<div class="card" style="border-top-color:${color}">
+  return `<div class="card">
     <div class="card-header">
       <span class="card-name" title="${escapeAttr(sample.kind || "网站")}">${meta.icon} ${escapeHtml(name)}</span>
       ${sub}
