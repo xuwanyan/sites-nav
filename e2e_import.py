@@ -126,13 +126,33 @@ def main():
         check("CSV 中文表头: 负责人已写入", s.get("owner") == "张三")
         check("CSV 中文表头: 监控默认关", s.get("monitor") is False)
 
-        # ── 3. 查重 ─────────────────────────────────────────────
+        # ── 3. 查重与增量更新 ───────────────────────────────────
+        # 同名同环境 = 明确指向同一张记录：显式填了的列做增量更新，没填的列保持原值。
+        # （这里断言的是"更新"，不是"跳过" —— 增量更新落地后旧断言就过期了）
         r = do_import(H, "json", json.dumps([
-            {"name": f"{PREFIX}-JSON-正常", "env": "生产环境", "domain": "e2e-dup-name.example.com"},  # 同名同环境
+            {"name": f"{PREFIX}-JSON-正常", "env": "生产环境", "domain": "e2e-dup-name.example.com"},
         ], ensure_ascii=False))
-        check("同名同环境被跳过", r.json()["added"] == 0 and r.json()["skipped_count"] == 1, str(r.json()))
+        check("同名同环境有变化 → 增量更新",
+              r.json()["added"] == 0 and r.json()["updated"] == 1, str(r.json()))
+        got = [s for s in get_sites(H) if s["name"] == f"{PREFIX}-JSON-正常"]
+        check("增量更新写入了显式填的列",
+              bool(got) and got[0].get("domain") == "e2e-dup-name.example.com",
+              f"domain={got[0].get('domain') if got else None}")
+        check("增量更新不动没填的列",
+              bool(got) and got[0].get("kind") == "网站",
+              f"kind={got[0].get('kind') if got else None}")
+
+        # 同名同环境且内容完全一致 → 跳过（"内容未变化"），不产生无意义的 updated
         r = do_import(H, "json", json.dumps([
-            {"name": f"{PREFIX}-JSON-换个名", "env": "测试环境", "domain": "e2e-json-1.example.com"},  # 地址重复
+            {"name": f"{PREFIX}-JSON-正常", "env": "生产环境", "domain": "e2e-dup-name.example.com"},
+        ], ensure_ascii=False))
+        check("同名同环境内容未变化 → 跳过",
+              r.json()["added"] == 0 and r.json()["updated"] == 0 and r.json()["skipped_count"] == 1,
+              str(r.json()))
+
+        # 地址重复（名字不同）→ 跳过：指向的对象不确定，更新不安全
+        r = do_import(H, "json", json.dumps([
+            {"name": f"{PREFIX}-JSON-换个名", "env": "测试环境", "domain": "e2e-dup-name.example.com"},
         ], ensure_ascii=False))
         check("地址重复被跳过", r.json()["added"] == 0 and "重复" in str(r.json()["skipped"]), str(r.json()))
 
@@ -251,6 +271,37 @@ def main():
             for p in requests.get(f"{BASE}/api/probes", headers=H, timeout=5).json():
                 if str(p.get("url", "")) == probe_url:
                     requests.delete(f"{BASE}/api/probes/{p['id']}", headers=H, timeout=5)
+
+        # ── 9. probe_url（自定义探测地址）不能被编辑保存清掉 ─────────────
+        # 站点编辑表单不展示 probe_url、保存时也不带它。后端 SiteIn 若把它当默认空串
+        # 合并进记录，用户改一下备注就会把探测地址重置（探测目标悄悄换回域名优先）。
+        c = requests.post(f"{BASE}/api/sites", headers=H, json={
+            "name": f"{PREFIX}-探测地址", "env": "生产环境",
+            "domain": "e2e-probeurl.example.com",
+            "public_url": "http://180.235.66.99:1234",
+            "private_url": "http://10.99.99.1:1234",
+            "monitor": True, "probe_url": "http://10.99.99.1:1234",
+        }, timeout=5)
+        check("建立带自定义探测地址的站点", c.status_code == 200
+              and c.json().get("probe_url") == "http://10.99.99.1:1234",
+              f"status={c.status_code} probe_url={c.json().get('probe_url') if c.status_code == 200 else ''}")
+        if c.status_code == 200:
+            sid = c.json()["id"]
+            full = next(s for s in get_sites(H) if s["id"] == sid)
+            # 模拟编辑表单提交：payload 里不含 probe_url
+            edit = {k: v for k, v in full.items()
+                    if k not in ("id", "created_at", "updated_at", "probe_url")}
+            requests.put(f"{BASE}/api/sites/{sid}", headers=H, json=edit, timeout=5)
+            after = next(s for s in get_sites(H) if s["id"] == sid)
+            check("编辑保存后 probe_url 未被清空",
+                  after.get("probe_url") == "http://10.99.99.1:1234",
+                  f"probe_url={after.get('probe_url')!r}")
+            # 显式传空串仍应能清除（保留"可清除"的语义）
+            requests.put(f"{BASE}/api/sites/{sid}", headers=H,
+                         json=dict(edit, probe_url=""), timeout=5)
+            cleared = next(s for s in get_sites(H) if s["id"] == sid)
+            check("显式传空串仍可清除 probe_url", cleared.get("probe_url") == "",
+                  f"probe_url={cleared.get('probe_url')!r}")
 
     finally:
         cleanup(H)
