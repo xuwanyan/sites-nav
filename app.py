@@ -307,7 +307,10 @@ def _load_unlocked() -> list:
                         raw = candidate
                         recovered_from = bk.name
                         break
-                except (json.JSONDecodeError, OSError):
+                except (json.JSONDecodeError, OSError) as e:
+                    # 主文件损坏时这行日志是唯一的排查线索：哪个备份、为什么不可用
+                    print(f"[WARN] 备份 {bk.name} 不可用（{type(e).__name__}: {e}），继续尝试下一级",
+                          file=sys.stderr)
                     continue
         if recovered_from:
             _data_warning = f"主数据文件损坏，已从备份 {recovered_from} 恢复"
@@ -318,6 +321,10 @@ def _load_unlocked() -> list:
                 pass
         else:
             _data_warning = "主数据文件和所有备份均损坏，返回空数据"
+            # 必须在这里兜成空列表：下面统一按 raw 迭代，留 None 会直接
+            # TypeError: 'NoneType' object is not iterable —— 本想"优雅返回空数据"，
+            # 实际变成所有请求 500（主文件被手工改坏、且没有可用备份时就会踩到）
+            raw = []
     # 加载时校验/修复 id：data 文件可能被手改，防止非法 id 注入 onclick
     sites = [{
         **FIELD_DEFAULTS,
@@ -368,8 +375,10 @@ def _save_unlocked(sites: list) -> None:
         try:
             _rotate_backups()
             BACKUP_FILE.write_bytes(DATA_FILE.read_bytes())
-        except OSError:
-            pass  # 备份失败不阻塞写入，但避免静默丢原始数据
+        except OSError as e:
+            # 出声，不要静默：备份失败意味着主文件被覆盖后无法回滚，是最需要留痕的一类故障
+            # （磁盘满 / 权限错 / volume 挂错都会走到这里）
+            print(f"[WARN] 数据备份失败，主文件仍会写入但无法回滚: {e}", file=sys.stderr)
     tmp = DATA_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(sites, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, DATA_FILE)
@@ -383,8 +392,9 @@ def _rotate_backups() -> None:
         if src.exists():
             try:
                 dst.write_bytes(src.read_bytes())
-            except OSError:
-                pass
+            except OSError as e:
+                # 单级轮转失败不阻塞整体写入，但必须留痕（否则备份链静默残缺）
+                print(f"[WARN] 备份轮转失败 {src.name} -> {dst.name}: {e}", file=sys.stderr)
 
 
 def _load_mutate(fn) -> list:
