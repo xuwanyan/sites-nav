@@ -168,6 +168,35 @@ def main():
         nf = requests.put(f"{BASE}/api/sites/nonexist", headers=H, json=ok_site, timeout=5)
         check("更新不存在的站点 → 404", nf.status_code == 404, f"status={nf.status_code}")
 
+        # ── 2b. 批量删除 ────────────────────────────────────────────────
+        made = []
+        for i in range(3):
+            rr = requests.post(f"{BASE}/api/sites", headers=H, json={
+                "name": f"{SP}批量删除{i}", "env": "测试环境",
+                "domain": f"e2e2-batch{i}.example.com"}, timeout=5)
+            if rr.status_code == 200:
+                made.append(rr.json()["id"])
+        check("批量删除：先建 3 条", len(made) == 3, f"n={len(made)}")
+        if len(made) == 3:
+            br = requests.post(f"{BASE}/api/sites/batch-delete", headers=H,
+                               json={"ids": made[:2] + ["deadbeef"]}, timeout=10)
+            check("批量删除返回真正删掉的数量",
+                  br.status_code == 200 and br.json().get("deleted") == 2, str(br.json())[:160])
+            check("批量删除报告不存在的 id（不静默吞）",
+                  br.status_code == 200 and br.json().get("not_found") == ["deadbeef"], str(br.json())[:160])
+            left = {s["id"] for s in get_sites(H)}
+            check("只剩没选中的那一条", made[2] in left and made[0] not in left and made[1] not in left,
+                  f"存在情况={[m in left for m in made]}")
+            check("批量删除空列表 → 422",
+                  requests.post(f"{BASE}/api/sites/batch-delete", headers=H,
+                                json={"ids": []}, timeout=5).status_code == 422)
+            check("批量删除纯空白 id → 400",
+                  requests.post(f"{BASE}/api/sites/batch-delete", headers=H,
+                                json={"ids": ["   "]}, timeout=5).status_code == 400)
+            check("批量删除不存在的 id 全部 → deleted=0",
+                  requests.post(f"{BASE}/api/sites/batch-delete", headers=H,
+                                json={"ids": ["ffffffff"]}, timeout=5).json().get("deleted") == 0)
+
         # ── 3. 快捷监控字段保全（sitePayload 修复点） ────────────────────
         # 修好后的 sitePayload 会把整条记录铺开（只去掉 id/时间戳）。这里就用这个形状 PUT，
         # 断言每个字段都原样保留 —— 漏任何一个（memo_content / probe_cert_expire /
@@ -275,6 +304,8 @@ def main():
             ("用户列表", lambda: requests.get(f"{BASE}/api/users", headers=HU, timeout=5)),
             ("拨测目标", lambda: requests.get(f"{BASE}/api/probes", headers=HU, timeout=5)),
             ("配置预览", lambda: requests.get(f"{BASE}/api/config/preview", headers=HU, timeout=5)),
+            ("批量删除", lambda: requests.post(f"{BASE}/api/sites/batch-delete", headers=HU,
+                                           json={"ids": ["aaaaaaaa"]}, timeout=5)),
         ]
         for label, fn in forbidden:
             check(f"普通用户被拒：{label}", fn().status_code == 403)

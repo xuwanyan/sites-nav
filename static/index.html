@@ -537,6 +537,33 @@
     gap: 10px;
   }
 
+  /* 批量删除 */
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .batch-toolbar {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 10px; font-size: 13px;
+  }
+  .batch-count { color: var(--c-primary); font-weight: 600; }
+  .batch-hint { margin-left: auto; color: #8c8c8c; font-size: 12px; }
+  .batch-list {
+    max-height: 46vh; overflow-y: auto;
+    border: 1px solid #f0f0f0; border-radius: 8px;
+  }
+  .batch-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; font-size: 13px; cursor: pointer;
+    border-bottom: 1px solid #fafafa;
+  }
+  .batch-row:last-child { border-bottom: none; }
+  .batch-row:hover { background: #fafafa; }
+  .batch-row input[type="checkbox"] { width: auto; min-width: 0; margin: 0; }
+  .batch-row .b-name { font-weight: 500; }
+  .batch-row .b-addr {
+    margin-left: auto; color: #8c8c8c; font-size: 12px;
+    max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .batch-empty { padding: 28px; text-align: center; color: #8c8c8c; font-size: 13px; }
+
   /* 空状态 */
   .empty-state {
     text-align: center;
@@ -658,6 +685,7 @@
         <a class="menu-item" id="probesBtn" href="/probes" target="_blank" rel="noopener" role="menuitem"><svg class="ic"><use href="#i-radar"/></svg> 拨测管理</a>
         <button class="menu-item" id="usersBtn" onclick="closeAdminMenu();openUsersModal()" role="menuitem"><svg class="ic"><use href="#i-users"/></svg> 用户管理</button>
         <button class="menu-item" id="exportBtn" onclick="closeAdminMenu();openExportModal()" role="menuitem"><svg class="ic"><use href="#i-download"/></svg> 导出数据</button>
+        <button class="menu-item" id="batchDelBtn" onclick="closeAdminMenu();openBatchDeleteModal()" role="menuitem"><svg class="ic"><use href="#i-trash"/></svg> 批量删除</button>
       </div>
     </div>
     <button id="logoutBtn" class="btn btn-default" style="display:none;" onclick="logout()"><svg class="ic"><use href="#i-logout"/></svg> 退出</button>
@@ -953,6 +981,30 @@
     <div class="modal-footer">
       <button class="btn btn-default" onclick="closeDeleteModal()">取消</button>
       <button class="btn btn-danger" id="deleteBtn" onclick="confirmDelete(this)">确认删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- 批量删除模态框（管理员）。列表 = 当前筛选结果，所见即所删 -->
+<div class="modal-overlay" id="batchDeleteModal">
+  <div class="modal" style="max-width:760px;">
+    <div class="modal-header">
+      <h3>批量删除</h3>
+      <button class="modal-close" onclick="closeBatchDeleteModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="batch-toolbar">
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+          <input type="checkbox" id="batchAll" style="width:auto;" onchange="batchToggleAll(this.checked)"> 全选
+        </label>
+        <span id="batchCount" class="batch-count"></span>
+        <span class="batch-hint">列表 = 当前筛选结果（分类 / 搜索 / 环境 / 协议 / 监控状态）</span>
+      </div>
+      <div id="batchList" class="batch-list"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-default" onclick="closeBatchDeleteModal()">取消</button>
+      <button class="btn btn-danger" id="batchDeleteBtn" onclick="batchDeleteSelected(this)" disabled>删除选中</button>
     </div>
   </div>
 </div>
@@ -1434,23 +1486,34 @@ function clearProbeFilter() {
 }
 
 // ==================== 渲染网站卡片 ====================
+// 站点是否命中当前筛选（分类 / 关键词 / 监控状态 / 协议）。
+// 列表渲染和「批量删除」共用它 —— 两处各写一遍筛选条件，迟早口径漂移。
+function siteMatchesFilters(s, keyword) {
+  if (activeCategory !== "全部" && catOf(s) !== activeCategory) return false;
+  if (keyword) {
+    const ok = [s.name, s.kind, s.category, s.public_url, s.private_url, s.domain, s.connection, s.owner, s.env, s.remark, s.memo_content]
+      .some(v => (v || "").toLowerCase().includes(keyword));
+    if (!ok) return false;
+  }
+  // 拨测状态筛选：与计数口径一致——已监控=monitor 为真；未监控=有地址但没开监控
+  if (activeMonitor === "已监控" && !s.monitor) return false;
+  if (activeMonitor === "未监控" && (s.monitor || !(s.domain || s.public_url || s.private_url || s.connection))) return false;
+  // 拨测协议筛选：仅作用于已监控目标
+  if (activeProtocol !== "全部" && (!s.monitor || probeProtocolOf(s) !== activeProtocol)) return false;
+  return true;
+}
+
+// 当前筛选出的站点（含环境筛选）。「批量删除」的列表就是它 —— 所见即所删
+function currentFilteredSites() {
+  const keyword = $("searchInput").value.toLowerCase().trim();
+  return sites.filter(s => siteMatchesFilters(s, keyword)
+    && (activeEnv === "全部" || s.env === activeEnv));
+}
+
 function renderSites() {
   const keyword = $("searchInput").value.toLowerCase().trim();
   // 分类/关键词筛选逐站点生效
-  let filtered = sites.filter(s => {
-    if (activeCategory !== "全部" && catOf(s) !== activeCategory) return false;
-    if (keyword) {
-      const ok = [s.name, s.kind, s.category, s.public_url, s.private_url, s.domain, s.connection, s.owner, s.env, s.remark, s.memo_content]
-        .some(v => (v || "").toLowerCase().includes(keyword));
-      if (!ok) return false;
-    }
-    // 拨测状态筛选：与计数口径一致——已监控=monitor 为真；未监控=有地址但没开监控
-    if (activeMonitor === "已监控" && !s.monitor) return false;
-    if (activeMonitor === "未监控" && (s.monitor || !(s.domain || s.public_url || s.private_url || s.connection))) return false;
-    // 拨测协议筛选：仅作用于已监控目标
-    if (activeProtocol !== "全部" && (!s.monitor || probeProtocolOf(s) !== activeProtocol)) return false;
-    return true;
-  });
+  let filtered = sites.filter(s => siteMatchesFilters(s, keyword));
   // 按站点名分组（大小写不敏感、去空格），同 name 的多环境合成一张卡
   const groups = new Map();
   filtered.forEach(s => {
@@ -2927,6 +2990,87 @@ function closeDeleteModal() {
   if (cb) cb.checked = false;
   $("deleteModal").classList.remove("show");
 }
+// ==================== 批量删除 ====================
+// 选择集放在这里而不是每次查 DOM：列表重建后仍能保持已勾选状态
+let batchSelected = new Set();
+
+function batchAddressOf(s) {
+  return s.domain || s.public_url || s.private_url || s.connection || "";
+}
+
+// 列表 = 当前筛选结果（currentFilteredSites），所见即所删
+function openBatchDeleteModal() {
+  const list = currentFilteredSites();
+  batchSelected = new Set();
+  const box = $("batchList");
+  box.innerHTML = list.length ? list.map(s => `
+      <label class="batch-row">
+        <input type="checkbox" data-batch-id="${escapeAttr(s.id)}" onchange="batchToggleOne(this)">
+        <span class="b-name">${escapeHtml(s.name || "")}</span>
+        ${envTag(s)}
+        ${s.monitor ? `<span class="env-tag env-probe" title="删除后它的拨测目标一并消失">${icon("radar")} 已监控</span>` : ""}
+        <span class="b-addr" title="${escapeAttr(batchAddressOf(s))}">${escapeHtml(batchAddressOf(s) || "（无地址）")}</span>
+      </label>`).join("")
+    : `<div class="batch-empty">当前筛选下没有可删除的条目</div>`;
+  $("batchAll").checked = false;
+  $("batchDeleteModal").classList.add("show");
+  syncBatchCount();
+}
+
+function closeBatchDeleteModal() {
+  batchSelected = new Set();
+  $("batchDeleteModal").classList.remove("show");
+}
+
+function batchToggleOne(cb) {
+  if (cb.checked) batchSelected.add(cb.dataset.batchId);
+  else batchSelected.delete(cb.dataset.batchId);
+  syncBatchCount();
+}
+
+function batchToggleAll(checked) {
+  $("batchList").querySelectorAll("input[data-batch-id]").forEach(cb => {
+    cb.checked = checked;
+    if (checked) batchSelected.add(cb.dataset.batchId);
+    else batchSelected.delete(cb.dataset.batchId);
+  });
+  syncBatchCount();
+}
+
+function syncBatchCount() {
+  const total = $("batchList").querySelectorAll("input[data-batch-id]").length;
+  const n = batchSelected.size;
+  $("batchCount").textContent = total ? `已选 ${n} / ${total} 条` : "";
+  const btn = $("batchDeleteBtn");
+  btn.disabled = n === 0;
+  btn.textContent = n ? `删除选中（${n} 条）` : "删除选中";
+  $("batchAll").checked = total > 0 && n === total;
+}
+
+async function batchDeleteSelected(btn) {
+  if (_busy) return;
+  const ids = [...batchSelected];
+  if (!ids.length) { showToast("请先勾选要删除的条目", "error"); return; }
+  if (!confirm(`确定删除选中的 ${ids.length} 条记录？此操作不可恢复。`)) return;
+  _busy = true;
+  if (btn) { btn.disabled = true; btn.dataset.orig = btn.textContent; btn.textContent = "删除中…"; }
+  try {
+    // 一次请求删完：后端一次读-改-写，不再逐条 DELETE 打 N 个请求
+    const res = await api("/api/sites/batch-delete", { method: "POST", body: JSON.stringify({ ids }) });
+    const n = res.deleted || 0;
+    const lost = Array.isArray(res.not_found) ? res.not_found.length : 0;
+    showToast(lost ? `已删除 ${n} 条（${lost} 条已不存在）` : `已删除 ${n} 条记录`, n ? "success" : "error");
+    closeBatchDeleteModal();
+    await loadSites();
+  } catch (e) {
+    showToast("批量删除失败: " + e.message, "error");
+  } finally {
+    _busy = false;
+    if (btn) btn.textContent = btn.dataset.orig || "删除选中";
+    syncBatchCount();
+  }
+}
+
 async function confirmDelete(btn) {
   if (_busy) return;
   _busy = true;

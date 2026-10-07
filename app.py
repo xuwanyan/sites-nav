@@ -1726,6 +1726,38 @@ def delete_site(site_id: str, authorization: str | None = Header(default=None)):
     return {"ok": True}
 
 
+class BatchDeleteIn(BaseModel):
+    """批量删除的入参。上限 500：一次请求别把整个数据文件重写几十遍，
+    也防止误传超大数组把内存顶爆（真要清空请分批或用导入覆盖）。"""
+    ids: list[str] = Field(min_length=1, max_length=500)
+
+
+@app.post("/api/sites/batch-delete")
+def batch_delete_sites(body: BatchDeleteIn, authorization: str | None = Header(default=None)):
+    """批量删除站点（管理员）。
+
+    一次读-改-写删完，而不是让前端循环调 N 次 DELETE：
+    每次 DELETE 都要读+写整个 data/sites.json，删 100 条就是 100 轮全量读写，
+    慢且中间态可见。这里返回真正删掉的数量与没找到的 id（并发下后者是有用信息，
+    不该静默吞掉）。单个 id 不存在不算错误，保证批量操作可重试。
+    """
+    _require_admin(authorization)
+    want = {i.strip() for i in body.ids if isinstance(i, str) and i.strip()}
+    if not want:
+        raise HTTPException(status_code=400, detail="未指定要删除的条目")
+    captured: dict = {}
+
+    def _mutate(sites_list):
+        existing = {s.get("id") for s in sites_list}
+        captured["deleted"] = len(existing & want)
+        captured["not_found"] = sorted(want - existing)
+        sites_list[:] = [s for s in sites_list if s.get("id") not in want]
+
+    _load_mutate(_mutate)
+    # 删掉的站点若在监控中，其拨测目标自动消失（下次 categraf 拉取时不再包含）
+    return {"deleted": captured["deleted"], "not_found": captured["not_found"]}
+
+
 @app.get("/api/monitor-status")
 def monitor_status(authorization: str | None = Header(default=None)):
     """各系统拨测状态（写站点即生效，无需同步状态跟踪）"""

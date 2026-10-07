@@ -198,6 +198,40 @@ window.confirm = function () { return true; };   // 无头下 confirm 默认被�
   ok("sitePayload 输出带 probe_cert_expire=false", p.probe_cert_expire === false);
   ok("sitePayload 输出不带 id", !("id" in p));
 
+  // ── 批量删除（放最后：它会真的把 stub 里的数据删掉） ──
+  openBatchDeleteModal();
+  ok("批量删除弹窗打开", $("batchDeleteModal").classList.contains("show"));
+  const rows = $("batchList").querySelectorAll("input[data-batch-id]").length;
+  ok("列表列出全部 3 条", rows === 3, "rows=" + rows);
+  ok("列表带环境标签", $("batchList").querySelectorAll(".env-tag").length >= 3);
+  ok("未勾选时删除按钮禁用", $("batchDeleteBtn").disabled === true);
+  ok("未勾选时计数为 0", ($("batchCount").textContent || "").indexOf("已选 0 / 3") >= 0, $("batchCount").textContent);
+  const firstBox = $("batchList").querySelector("input[data-batch-id]");
+  firstBox.checked = true; batchToggleOne(firstBox);
+  ok("勾一条后计数变化", ($("batchCount").textContent || "").indexOf("已选 1 / 3") >= 0, $("batchCount").textContent);
+  ok("勾一条后按钮可用", $("batchDeleteBtn").disabled === false);
+  ok("按钮文案带条数", ($("batchDeleteBtn").textContent || "").indexOf("1 条") >= 0, $("batchDeleteBtn").textContent);
+  $("batchAll").checked = true; batchToggleAll(true);
+  ok("全选后计数正确", ($("batchCount").textContent || "").indexOf("已选 3 / 3") >= 0, $("batchCount").textContent);
+  ok("全选后全选框为选中", $("batchAll").checked === true);
+  $("batchAll").checked = false; batchToggleAll(false);
+  ok("取消全选后计数归零", ($("batchCount").textContent || "").indexOf("已选 0 / 3") >= 0, $("batchCount").textContent);
+  // 真正执行删除（window.confirm 已垫成 true）
+  $("batchAll").checked = true; batchToggleAll(true);
+  await batchDeleteSelected($("batchDeleteBtn"));
+  ok("删除后弹窗自动关闭", !$("batchDeleteModal").classList.contains("show"));
+  let dl = Date.now() + 5000;
+  while (Date.now() < dl && document.querySelectorAll(".cards-grid .card").length > 0) {
+    await new Promise(r => setTimeout(r, 50));
+  }
+  ok("删除后列表清空", document.querySelectorAll(".cards-grid .card").length === 0,
+     "cards=" + document.querySelectorAll(".cards-grid .card").length);
+  ok("删除后显示空状态", !!document.querySelector(".empty-state"));
+  openBatchDeleteModal();
+  ok("没有可删条目时给出提示", !!document.querySelector(".batch-empty"));
+  ok("没有可删条目时按钮禁用", $("batchDeleteBtn").disabled === true);
+  closeBatchDeleteModal();
+
   const pre = document.createElement("pre");
   pre.id = "__uitest";
   pre.textContent = "UITEST" + JSON.stringify(out);
@@ -242,6 +276,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(json.dumps({"enabled": True, "state": "ok", "reason": ""}))
         if path in ("/api/probes", "/api/probe-targets", "/api/users"):
             return self._send("[]")
+        return self._send("{}")
+
+
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n).decode("utf-8") if n else "{}"
+        if path == "/api/sites/batch-delete":
+            # 真的从 fixture 里删掉：这样页面 reload 后卡片会消失，能端到端验证
+            ids = set(json.loads(body).get("ids") or [])
+            before = len(FIXTURES)
+            FIXTURES[:] = [s for s in FIXTURES if s["id"] not in ids]
+            return self._send(json.dumps({"deleted": before - len(FIXTURES), "not_found": []}))
         return self._send("{}")
 
 
