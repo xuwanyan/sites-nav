@@ -105,6 +105,19 @@ if [ -d "$APP_DIR/.git" ]; then
   if [ "$OLD" = "$NEW" ]; then
     OK "代码已是最新 ($NEW)"
   else
+    # 工作区有未提交的改动时，checkout -B 会直接失败（git 只甩一句英文
+    # "Your local changes to the following files would be overwritten by checkout"），
+    # 整个更新卡住而不知道为什么。提前查清并给出可操作的处理方式。
+    # 不改用户的东西：只提示，不自动 stash —— 静默吞掉线上改动比报错更糟。
+    DIRTY="$(cd "$APP_DIR" && git status --porcelain --untracked-files=no 2>/dev/null || true)"
+    if [ -n "$DIRTY" ]; then
+      FAIL "代码目录有未提交的改动，更新会覆盖它们，已中止（未改动任何文件）：
+$(printf '  %s\n' "$DIRTY")
+  处理方式（任选其一）后重跑：
+    cd $APP_DIR && git stash                 # 暂存改动，更新后再 git stash pop（可能冲突）
+    cd $APP_DIR && git checkout -- <上面的文件>   # 确认不要了，直接丢弃
+  说明：.env 与 data/ 已在 .gitignore 里，不属于这些文件，不会被碰到。"
+    fi
     # checkout -B 而非 pull：部署机不应有本地提交漂移。ignored 文件不受影响。
     (cd "$APP_DIR" && git checkout -B "$BRANCH" "$NEW")
     OK "已更新 $(printf '%.7s' "$OLD") -> $(printf '%.7s' "$NEW")"
