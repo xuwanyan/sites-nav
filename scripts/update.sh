@@ -92,12 +92,16 @@ export APP_DIR BRANCH
 [ -n "$REPO_URL" ]  && export REPO_URL
 # -E 保留上面的变量，让 bootstrap 里的 git 拉取也走镜像
 if ! sudo -E bash /tmp/bootstrap.sh; then
-  die "bootstrap 失败（多数是服务器连不上 github.com）。
+  die "bootstrap 失败。常见原因和对策：
 
-  任选其一后重跑本脚本：
-    1) export GH_MIRROR=https://ghproxy.net
-    2) git config --global url.\"https://ghproxy.net/https://github.com/\".insteadOf \"https://github.com/\"
-    3) 换仓库源： export REPO_URL=https://gitee.com/<用户名>/sites-nav.git
+  A. 服务器连不上 github.com（报 Empty reply / connection reset）
+     1) export GH_MIRROR=https://ghproxy.net/
+     2) git config --global url.\"https://ghproxy.net/https://github.com/\".insteadOf \"https://github.com/\"
+     3) 换仓库源： export REPO_URL=https://gitee.com/<用户名>/sites-nav.git
+
+  B. 报 'untracked working tree files would be overwritten by checkout'
+     仓库里新跟踪的文件（如 scripts/xxx.sh）在本地已存在但未跟踪，git 拒绝覆盖。
+     把 bootstrap 列出的那几个文件 mv 走或删掉，再重跑本脚本。
 
   此时容器仍在用旧镜像运行，服务没有中断。"
 fi
@@ -107,6 +111,21 @@ if [ "$NEW_REV" = "$OLD_REV" ]; then
   log "代码无变化（仍是 $NEW_REV），继续重建部署以应用当前代码"
 else
   log "代码更新：$OLD_REV → $NEW_REV"
+fi
+
+# 自我同步：仓库里的 scripts/update.sh 受版本管理，APP_DIR/update.sh 是运行副本（未跟踪）。
+# 拷过去下次跑就是最新版；两个文件相同则跳过（update.sh 是指向 scripts/ 的软链时也走这条）。
+# 用 cp 到临时文件再 mv：mv 是原子替换、换新 inode，不会影响"正在运行的本脚本"的读取
+# （直接 cp 覆盖会截断同一 inode，正在执行的 shell 可能读到半截内容）。
+SELF_SRC="${APP_DIR}/scripts/update.sh"
+SELF_DST="${APP_DIR}/update.sh"
+if [ -f "$SELF_SRC" ] && ! cmp -s "$SELF_SRC" "$SELF_DST" 2>/dev/null; then
+  if cp -f "$SELF_SRC" "${SELF_DST}.new" && chmod +x "${SELF_DST}.new" && mv -f "${SELF_DST}.new" "$SELF_DST" 2>/dev/null; then
+    log "已把 update.sh 同步为仓库里的最新版（下次运行生效）"
+  else
+    rm -f "${SELF_DST}.new" 2>/dev/null || true
+    warn "update.sh 自我同步失败（不影响本次部署），可手动 cp scripts/update.sh update.sh"
+  fi
 fi
 
 # ── 3. 原地替换容器 ────────────────────────────────────────────────

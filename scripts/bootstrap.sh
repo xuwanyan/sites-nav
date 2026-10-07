@@ -34,6 +34,12 @@ set -euo pipefail
 # 与 deploy_versions.sh 的 GH_MIRROR 同一套：服务器只要 export GH_MIRROR 即可同时
 # 加速 raw 下载和 git 拉取。示例：export GH_MIRROR=https://ghproxy.com
 GH_MIRROR="${GH_MIRROR:-}"
+# 归一化尾斜杠：允许只写 https://ghproxy.net（不带结尾 /）。
+# 不归一化的话拼出来是 https://ghproxy.nethttps://github.com/... —— 非法 URL，
+# 首次 clone（没有 git 重写规则兜底时）会直接失败，而日志里那行 URL 还看不出问题。
+if [ -n "$GH_MIRROR" ]; then
+  GH_MIRROR="${GH_MIRROR%/}/"
+fi
 REPO_URL="${REPO_URL:-${GH_MIRROR}https://github.com/xuwanyan/sites-nav.git}"
 # APP_DIR / BRANCH 取位置参数，环境变量兜底（位置参数能穿过 sudo）。
 # --deploy 是开关：跑完准备后接着部署。不传则只准备、不启动。
