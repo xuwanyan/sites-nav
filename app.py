@@ -70,6 +70,16 @@ TOKEN_TTL = int(os.environ.get("TOKEN_TTL_HOURS", "12") or "12") * 3600
 # 与登录账密解耦：登录密码只用于 Web 页面，categraf config.toml 里只放这个 token
 CATEGRAF_TOKEN = os.environ.get("CATEGRAF_TOKEN", "")
 
+# 拨测 job 命名风格（PROBE_JOB_STYLE）：
+#   env（默认）= 站点名称 + 环境后缀，如 7ssl-生产环境。同名站点的生产/测试两条记录
+#                靠后缀区分，这是本项目的默认口径。
+#   bare       = 站点名称裸名，如 7ssl。用于从老 categraf-http-admin 平滑迁移：
+#                老 admin 的 job 就是裸名，不切成 bare 的话，N9E 里所有按 job=xxx
+#                建的告警规则/大盘会**静默失效**——不报错，只是再也匹配不上，
+#                表现为"拨测挂了却不告警"。
+# 未知取值一律按默认 env 处理。
+PROBE_JOB_STYLE = (os.environ.get("PROBE_JOB_STYLE", "env") or "env").strip().lower()
+
 # 拨测目标存储文件（端口拨测独立管理；HTTP 拨测从站点 monitor 字段动态生成）
 PROBES_FILE = DATA_DIR / "probes.json"
 PROBES_BACKUP = DATA_DIR / "probes.json.bak"
@@ -970,8 +980,15 @@ _ENV_SUFFIX = {"生产环境": "-生产环境", "测试环境": "-测试环境"}
 
 
 def _probe_job(site: dict) -> str:
-    """拨测 job 名 = 站点名称 + 环境后缀"""
+    """拨测 job 名 = 站点名称 + 环境后缀。
+
+    PROBE_JOB_STYLE=bare 时用裸名（只有站点名称），用于对齐老 categraf-http-admin
+    的 job 命名，避免切换数据源后 N9E 里按 job 建的规则/大盘静默失效。
+    """
     name = (site.get("name") or "").strip()
+    # 这里再归一化一次：环境变量在 import 时已归一，但运行时被改（测试/未来热加载）也要容错
+    if (PROBE_JOB_STYLE or "").strip().lower() == "bare":
+        return name
     env = (site.get("env") or "").strip()
     suffix = _ENV_SUFFIX.get(env, "")
     return f"{name}{suffix}" if suffix else name

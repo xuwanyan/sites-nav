@@ -217,6 +217,27 @@ finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
 # ── 5. 站点模型的字段清单（前端 sitePayload 必须覆盖全部） ────────────
+print("\n== 拨测 job 命名风格（PROBE_JOB_STYLE） ==")
+# 这条是给"从老 categraf-http-admin 迁移"用的：老 admin 的 job 是裸名，
+# sites-nav 默认会加环境后缀。不切成 bare 的话，N9E 里按 job=xxx 建的规则
+# 会静默失效（不报错，只是匹配不上）。
+_style = app.PROBE_JOB_STYLE
+app.PROBE_JOB_STYLE = "env"
+check("env 风格：名称 + 环境后缀", app._probe_job({"name": "7ssl", "env": "生产环境"}) == "7ssl-生产环境",
+      app._probe_job({"name": "7ssl", "env": "生产环境"}))
+check("env 风格：测试环境后缀", app._probe_job({"name": "x", "env": "测试环境"}) == "x-测试环境")
+check("env 风格：无环境值退化为裸名", app._probe_job({"name": "x", "env": ""}) == "x")
+app.PROBE_JOB_STYLE = "bare"
+check("bare 风格：裸名（对齐老 admin）", app._probe_job({"name": "7ssl", "env": "生产环境"}) == "7ssl",
+      app._probe_job({"name": "7ssl", "env": "生产环境"}))
+check("bare 风格：测试环境也不加后缀", app._probe_job({"name": "x", "env": "测试环境"}) == "x")
+check("bare 风格：缺字段不崩", app._probe_job({}) == "")
+app.PROBE_JOB_STYLE = "BARE "          # 大小写/空格容错
+check("风格值大小写与空格容错", app._probe_job({"name": "x", "env": "生产环境"}) == "x")
+app.PROBE_JOB_STYLE = "unknown-value"
+check("未知取值按默认 env 处理", app._probe_job({"name": "x", "env": "生产环境"}) == "x-生产环境")
+app.PROBE_JOB_STYLE = _style
+
 print("\n== 站点字段清单 ==")
 fields = set(app.SiteIn.model_fields.keys())
 must = {"name", "kind", "category", "public_url", "private_url", "domain", "connection", "owner",
