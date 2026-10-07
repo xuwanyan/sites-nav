@@ -227,9 +227,23 @@ check_port() {
     if command -v ss >/dev/null 2>&1; then
         pid=$(ss -ltnp 2>/dev/null | grep ":${PORT} " | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -1)
     fi
+    # 如果是别的容器占了端口，直接把它的项目名和工作目录点出来：
+    # 只说"被占用"用户不知道该停谁，尤其是同一个服务从别的目录部署过的情况。
+    local owner=""
+    if command -v docker >/dev/null 2>&1; then
+        owner=$(docker ps --filter "publish=${PORT}" \
+            --format '{{.Names}}（project={{.Label "com.docker.compose.project"}}，目录={{.Label "com.docker.compose.project.working_dir"}}）' \
+            2>/dev/null | head -1)
+    fi
     echo "❌ 端口 $PORT 已被其他进程占用${pid:+ (PID $pid)}"
-    echo "   换一个端口（.env 里改 PORT）或先停掉占用方"
-    echo "   不要 kill $pid：那通常是 docker-proxy，杀了它 Docker 也不会释放端口"
+    if [ -n "$owner" ]; then
+        echo "   占用者是容器：$owner"
+        echo "   若它是历史遗留（比如同一服务从别的目录部署过）：docker rm -f <容器名> 后重跑"
+        echo "   若它是别的服务在正常使用：.env 里改 PORT 换一个端口"
+    else
+        echo "   换一个端口（.env 里改 PORT）或先停掉占用方"
+        echo "   不要 kill $pid：那通常是 docker-proxy，杀了它 Docker 也不会释放端口"
+    fi
     exit 1
 }
 
