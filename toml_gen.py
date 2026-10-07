@@ -35,6 +35,19 @@ def validate_status_codes(s: str) -> str:
 
 # ── HTTP 拨测配置画像 ──
 
+def cert_expire_wanted(t: dict) -> bool:
+    """该目标是否要采集证书过期指标（False = 要在 TOML 里 drop 掉）。
+
+    证书指标只有 https 目标才存在：categraf 是在
+    `strings.HasPrefix(target, "https://") && resp.TLS != nil` 时才产出
+    cert_expire_timestamp 的。所以 http:// 目标上勾不勾「采集证书过期时间」都一样 ——
+    这里统一按"采集"处理，免得给 http 目标下发一段永远不起作用的 metrics_drop。
+    """
+    if t.get("cert_expire") is not False:
+        return True
+    return not (t.get("url") or "").lower().startswith("https://")
+
+
 def _http_profile_key(t: dict) -> str:
     """HTTP 拨测配置画像 key：只有完全相同的配置才能合并到同一个 [[instances]]"""
     profile = {
@@ -48,8 +61,8 @@ def _http_profile_key(t: dict) -> str:
         "tls_ca": t.get("tls_ca", ""),
         "insecure_skip_verify": t.get("insecure_skip_verify", False),
         "follow_redirects": t.get("follow_redirects"),
-        # certify 过期时间：None/True=采集；False=跳过。只会拆出"跳过"那一组，其余合并
-        "cert_expire": t.get("cert_expire") is not False,
+        # 证书过期时间：只会拆出"要跳过且确实是 https"那一组，其余合并（见 cert_expire_wanted）
+        "cert_expire": cert_expire_wanted(t),
     }
     return json.dumps(profile, ensure_ascii=False, sort_keys=True)
 
@@ -118,7 +131,7 @@ def generate_http_toml(targets: list[dict]) -> str:
                     "tls_ca": t.get("tls_ca", ""),
                     "insecure_skip_verify": t.get("insecure_skip_verify", False),
                     "follow_redirects": t.get("follow_redirects"),
-                    "cert_expire": t.get("cert_expire") is not False,
+                    "cert_expire": cert_expire_wanted(t),
                 },
                 "urls": [],
             }

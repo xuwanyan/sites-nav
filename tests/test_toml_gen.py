@@ -195,6 +195,27 @@ for label, kind, a, b in VERSION_PAIRS:
           f"TOML变了={t_a != t_b} version变了={v_a != v_b}")
 
 
+# ── 6. 证书过期指标只对 https 目标有意义 ─────────────────────────
+# categraf 仅在 https 目标上产出 cert_expire_timestamp
+# （http_response.go: strings.HasPrefix(target, "https://") && resp.TLS != nil）。
+# 所以 http:// 目标上的 cert_expire=False 不该下发 metrics_drop —— 那是一段
+# 永远不起作用的配置，还会让"关掉证书采集"这件事看起来生效了其实没有。
+
+CERT_CASES = [
+    ("https + 不采集", "https://a.example.com", False, True),
+    ("https + 采集", "https://a.example.com", True, False),
+    ("https + 默认(None)", "https://a.example.com", None, False),
+    ("http + 不采集", "http://a.example.com", False, False),
+    ("http + 默认(None)", "http://a.example.com", None, False),
+    ("无 scheme + 不采集", "a.example.com", False, False),
+]
+for label, url, ce, want_drop in CERT_CASES:
+    txt = toml_gen.generate_http_toml(
+        [http_target("", id="a1b2c3d4", url=url, cert_expire=ce)])
+    got = "metrics_drop" in txt
+    check(f"metrics_drop 只在 https 上生效：{label}", got == want_drop, f"metrics_drop={got}")
+
+
 ok = sum(1 for _, r in RESULTS if r)
 print(f"\n{ok}/{len(RESULTS)} passed")
 if ok != len(RESULTS):

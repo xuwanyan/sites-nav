@@ -145,9 +145,12 @@ COMPOSE_PROFILES=builtin-mysql docker compose exec -T mysql sh -c \
 | 私有 CA | 证书路径（categraf 服务器本地路径，仅 HTTPS 地址时显示） | 与「跳过证书校验」互斥，勾选跳过时自动清空 |
 | 跳过证书校验 | ⚠️ 勾选后不校验服务端证书（仅 HTTPS 地址时显示） | 优先于私有 CA；勾选时 `tls_ca` 置空，仅落盘 `insecure_skip_verify = true` |
 
-- 仅当拨测地址（域名 / 公网 / 内网，按优先级取第一个）是 `https://` 前缀时显示 TLS 配置块
+- 仅当**实际探测地址**是 `https://` 前缀时显示 TLS 配置块。「实际探测地址」= 表单里「探测地址」下拉选中的那个；选「自动」时按 域名 > 公网 > 内网 取第一个
 - 拨测地址不是 HTTPS 时，自动清空跳过校验与私有 CA（避免残留无效配置）
 - `use_tls` 由后端自动推导：`跳过校验 或 私有CA非空 → use_tls = true`（对齐原 admin 的 normalizeTLS）
+- 「采集证书过期时间」只对 HTTPS 目标有意义：categraf 仅在 `https://` 且拿到 `resp.TLS` 时才产出
+  `cert_expire_timestamp`，`http://` 目标上取消勾选不会产生任何效果。所以对非 HTTPS 目标
+  不会下发 `metrics_drop`（免得多一段永远不起作用的配置）
 
 ## 普通用户
 
