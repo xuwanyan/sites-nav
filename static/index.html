@@ -2121,6 +2121,9 @@ function _readSiteFields() {
   d.f_environment = $("f_environment").value;
   d.f_monitor = $("f_monitor").checked;
   d.f_probe_skip_verify = $("f_probe_skip_verify").checked;
+  // 采集证书过期时间也是 checkbox：同样不能走上面那个 .value 循环（checkbox 的 .value
+  // 恒为 "on"，取不到勾选状态），也不该塞进 _SITE_FIELD_IDS，否则草稿/脏检查永远认为它是勾上的
+  d.f_probe_cert_expire = $("f_probe_cert_expire").checked;
   return d;
 }
 function _applySiteFields(d) {
@@ -2137,6 +2140,8 @@ function _applySiteFields(d) {
   $("f_environment").value = d.f_environment || "生产环境";
   if (!$("f_probe_protocol").value) $("f_probe_protocol").value = "tcp";  // select 不落到空
   $("f_monitor").checked = !!d.f_monitor;
+  // 缺省（新建/清空草稿）按"采集"处理：只有显式 false 才取消勾选
+  $("f_probe_cert_expire").checked = d.f_probe_cert_expire !== false;
   $("f_probe_skip_verify").checked = !!d.f_probe_skip_verify;
   toggleProbeSkip();
 }
@@ -2403,27 +2408,25 @@ function updateMonitorBtn() {
 }
 
 // ==================== 快捷加入/取消监控 ====================
-// 从站点记录组装 PUT 全量 payload（快捷按钮与编辑保存共用）
+// 从站点记录组装 PUT 全量 payload（加入监控弹窗 / 取消监控按钮用）。
+//
+// 必须"整条铺开"而不是手写字段清单：后端 update_site 是 {**旧记录, **payload} 合并，
+// payload 里没有的字段会被 SiteIn 的默认值覆盖。之前手写清单漏了 memo_content /
+// probe_cert_expire / probe_protocol / probe_read_timeout / probe_send / probe_expect，
+// 于是点一次「取消监控」就会把备忘录正文、证书采集开关、UDP 协议、发送内容、期望响应
+// 静默洗掉。这里只排除服务端自己维护的字段，其余原样带上，最后叠加 overrides。
+const _PAYLOAD_SKIP = ["id", "created_at", "updated_at"];
 function sitePayload(s, overrides = {}) {
-  return {
-    name: s.name || "", kind: s.kind || "网站",
-    category: s.category || "",
-    public_url: s.public_url || "", private_url: s.private_url || "",
-    domain: s.domain || "", connection: s.connection || "",
-    owner: s.owner || "",
-    env: s.env || "", remark: s.remark || "",
-    monitor: !!s.monitor,
-    probe_status_codes: s.probe_status_codes || "",
-    probe_timeout: s.probe_timeout || "",
-    probe_interval: s.probe_interval || "",
-    probe_method: s.probe_method || "",
-    probe_headers: s.probe_headers || "",
-    probe_body: s.probe_body || "",
-    probe_follow_redirects: s.probe_follow_redirects === true || s.probe_follow_redirects === false ? s.probe_follow_redirects : null,
-    probe_insecure_skip_verify: !!s.probe_insecure_skip_verify,
-    probe_tls_ca: s.probe_tls_ca || "",
-    ...overrides,
-  };
+  const out = {};
+  Object.keys(s).forEach(k => { if (_PAYLOAD_SKIP.indexOf(k) < 0) out[k] = s[k]; });
+  // 兜底成后端能接受的类型：三态字段（None=用 categraf 默认）保持 null 语义
+  out.name = s.name || "";
+  out.kind = s.kind || "网站";
+  out.env = s.env || "";
+  out.monitor = !!s.monitor;
+  out.probe_follow_redirects = (s.probe_follow_redirects === true || s.probe_follow_redirects === false)
+    ? s.probe_follow_redirects : null;
+  return { ...out, ...overrides };
 }
 
 // 与后端 SiteIn._norm_url_field / _url_host_error 一致：前端先拦，省一次 422 往返
