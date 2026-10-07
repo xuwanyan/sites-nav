@@ -307,6 +307,38 @@ def main():
                   requests.post(f"{BASE}/api/probes/batch-delete", headers=H,
                                 json={"ids": []}, timeout=5).status_code == 422)
 
+        # ── 5c. 跨页一致性（两个页面会不会互相残留） ─────────────────────
+        # 独立拨测目标存在 data/probes.json，它**不是站点**，所以首页本来就不会有它；
+        # 反过来，首页删掉站点后，它派生的拨测目标必须从拨测页一起消失。
+        rp2 = requests.post(f"{BASE}/api/probes", headers=H,
+                            json={"url": "10.9.9.41:6379", "job": f"{SP}跨页探针"}, timeout=5)
+        if rp2.status_code == 200:
+            xid = rp2.json()["id"]
+            site_ids = {s["id"] for s in get_sites(H)}
+            check("独立拨测目标不出现在首页站点列表", xid not in site_ids)
+            check("独立拨测目标出现在拨测页",
+                  any(t["id"] == xid for t in
+                      requests.get(f"{BASE}/api/probe-targets", headers=H, timeout=5).json()))
+            requests.post(f"{BASE}/api/probes/batch-delete", headers=H, json={"ids": [xid]}, timeout=5)
+            check("删掉后拨测页不再有它",
+                  all(t["id"] != xid for t in
+                      requests.get(f"{BASE}/api/probe-targets", headers=H, timeout=5).json()))
+            check("删独立目标不影响首页站点数（数量不变即未被误删）",
+                  len(get_sites(H)) == len(site_ids),
+                  f"{len(site_ids)} -> {len(get_sites(H))}")
+        rs2 = requests.post(f"{BASE}/api/sites", headers=H, json={
+            "name": f"{SP}跨页站点", "env": "测试环境",
+            "connection": "10.9.9.42:6379", "monitor": True}, timeout=5)
+        if rs2.status_code == 200:
+            job_name = f"{SP}跨页站点-测试环境"
+            check("站点派生的拨测目标出现在拨测页",
+                  any(t.get("job") == job_name for t in
+                      requests.get(f"{BASE}/api/probe-targets", headers=H, timeout=5).json()))
+            requests.delete(f"{BASE}/api/sites/{rs2.json()['id']}", headers=H, timeout=5)
+            check("首页删掉站点后，拨测页也不再出现它的目标",
+                  all(t.get("job") != job_name for t in
+                      requests.get(f"{BASE}/api/probe-targets", headers=H, timeout=5).json()))
+
         # ── 6. 用户管理 ─────────────────────────────────────────────────
         uname = f"{UP}reader"
         uc = requests.post(f"{BASE}/api/users", headers=H,
