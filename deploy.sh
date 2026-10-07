@@ -254,8 +254,14 @@ _port_is_ours() {
     ids=$(docker compose ps -q 2>/dev/null || true)
     [ -n "$ids" ] || return 1
     for cid in $ids; do
+        # 必须匹配 JSON 里的 HostPort。docker inspect -f '{{json .NetworkSettings.Ports}}'
+        # 的输出是 {"8000/tcp":[{"HostIp":"0.0.0.0","HostPort":"5005"}]}，
+        # **没有** docker ps 那种 0.0.0.0:5005->8000/tcp 的箭头写法。
+        # 原来 grep ":${PORT}->" 永远匹配不上 → 本函数恒为假 → 注释里写的
+        # "占用者是自己的容器就放行"从未生效，服务一在跑再部署就必被自己挡住。
+        # 三种写法都匹配：JSON 字符串、JSON 数字、箭头形式，兼容不同 docker 版本。
         if docker inspect -f '{{json .NetworkSettings.Ports}}' "$cid" 2>/dev/null \
-            | grep -q ":${PORT}->"; then
+            | grep -qE "(\"HostPort\":\"${PORT}\"|\"HostPort\":${PORT}|:${PORT}->)"; then
             return 0
         fi
     done
