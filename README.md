@@ -192,13 +192,9 @@ sites-nav 直接作为 categraf 的 `http_provider`，同时下发两类拨测�
 
 ### 端口拨测（net_response）
 
-访问 `/probes` 页面在线管理 TCP/UDP 端口拨测目标。该页是**总览**：既列出站点派生的目标（HTTP / 连接串站点），
-也列出独立目标。两类目标的维护方式不同：
-
-| 来源 | 行首 | 怎么维护 |
-|------|------|----------|
-| 站点派生 | `·` | 在首页编辑/删除对应站点（`/probes` 只读展示，避免两处都能改导致配置漂移） |
-| 独立目标 | 勾选框 | 可在本页**勾选后批量删除**（全选/单勾 → 「删除选中」→ 二次确认），也可调 `/api/probes` 单条增删改 |
+访问 `/probes` 页面查看 TCP/UDP 端口拨测目标。该页是**只读总览**：既列出站点派生的目标（HTTP / 连接串站点），
+也列出独立目标，但不提供任何增删入口 —— 站点派生的去首页改站点，独立目标走 `/api/probes` 接口管理，
+避免同一个目标在两处都能改导致配置漂移。
 
 | 字段 | 说明 |
 |------|------|
@@ -298,7 +294,7 @@ python run.py          # 带 --reload，改 app.py 自动重载
 python tests/run_all.py          # 一键跑全部 7 个套件
 ```
 
-分两类，共 379 项断言：
+分两类，共 377 项断言：
 
 | 套件 | 类型 | 覆盖 |
 |---|---|---|
@@ -306,7 +302,7 @@ python tests/run_all.py          # 一键跑全部 7 个套件
 | `tests/test_url_validation.py` | 离线 | URL/端口/IP 校验，并把前端函数抽出来跑 node 做**前后端对表** |
 | `tests/test_api_units.py` | 离线 | 登录限流（伪造 IP，不会锁本机）、provider 鉴权、密码策略、**持久化/备份轮转/损坏恢复**（临时目录） |
 | `tests/test_frontend_payload.py` | 离线 | `sitePayload` 必须覆盖 `SiteIn` 全部字段、草稿快照往返（node 真跑） |
-| `tests/test_ui_browser.py` | 离线 | 无头浏览器加载真实 `index.html` / `probes.html`：显隐逻辑、弹窗草稿、下拉回填、两处批量删除（需要 Edge/Chrome） |
+| `tests/test_ui_browser.py` | 离线 | 无头浏览器加载真实 `index.html` / `probes.html`：显隐逻辑、弹窗草稿、下拉回填、站点批量删除、**拨测页只读**（页面无任何勾选框/删除入口）（需要 Edge/Chrome） |
 | `e2e_import.py` | 在线 | 导入/查重/增量更新/拨测目标冲突 |
 | `e2e_full.py` | 在线 | 全接口：站点 CRUD 与校验、快捷监控字段保全、导出、拨测 CRUD、用户与角色权限、provider、备份落盘 |
 

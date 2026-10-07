@@ -82,19 +82,18 @@ FIXTURES = [
     site("s3a2b3c4", "备忘录条目", kind="备忘录", memo_content="纯文本正文"),
 ]
 
-# 拨测页 fixture：2 个独立目标（可删）+ 1 个站点派生（本页删不了）
+# 拨测页 fixture：2 个独立目标 + 1 个站点派生目标（都只读展示）
 PROBES = [
     {"id": "p1a2b3c4", "url": "10.9.9.1:6379", "job": "独立A", "protocol": "tcp", "timeout": "",
-     "read_timeout": "", "send": "", "expect": "", "kind": "net", "source": "probe"},
+     "read_timeout": "", "send": "", "expect": "", "kind": "net"},
     {"id": "p2a2b3c4", "url": "10.9.9.2:6379", "job": "独立B", "protocol": "udp", "timeout": "3s",
-     "read_timeout": "", "send": "", "expect": "", "kind": "net", "source": "probe"},
+     "read_timeout": "", "send": "", "expect": "", "kind": "net"},
     {"id": "s1a2b3c4", "url": "oa.example.com", "job": "站点派生", "kind": "http", "method": "GET",
-     "expected_status_codes": "200", "source": "site"},
+     "expected_status_codes": "200"},
 ]
 
 PROBES_JS = r"""
 <script>
-window.confirm = function () { return true; };
 (async function () {
   const out = [];
   const ok = (n, c, d) => out.push({ name: n, ok: !!c, detail: d === undefined ? "" : String(d) });
@@ -106,26 +105,25 @@ window.confirm = function () { return true; };
   }
   const rows = document.querySelectorAll("table tbody tr").length;
   ok("拨测页渲染出 3 行", rows === 3, "rows=" + rows);
-  const boxes = document.querySelectorAll("input[data-pb-id]").length;
-  ok("只有独立目标带勾选框（2 个）", boxes === 2, "boxes=" + boxes);
-  ok("站点派生行没有勾选框", !document.querySelector("input[data-pb-id][value^='s1']"));
-  ok("批量工具栏出现", !!$("pbAll") && !!$("pbDelBtn"));
-  ok("未勾选时删除按钮禁用", $("pbDelBtn").disabled === true);
-  ok("未勾选时计数为 0", ($("pbCount").textContent || "").indexOf("已选 0 / 2") >= 0, $("pbCount").textContent);
-  const one = document.querySelector("input[data-pb-id]");
-  one.checked = true; toggleProbeSel(one);
-  ok("勾一个后计数为 1", ($("pbCount").textContent || "").indexOf("已选 1 / 2") >= 0, $("pbCount").textContent);
-  $("pbAll").checked = true; toggleAllProbeSel(true);
-  ok("全选后计数为 2", ($("pbCount").textContent || "").indexOf("已选 2 / 2") >= 0, $("pbCount").textContent);
-  ok("两个勾选框都选上", Array.from(document.querySelectorAll("input[data-pb-id]")).every(cb => cb.checked));
-  await batchDeleteProbes($("pbDelBtn"));
-  let w = Date.now() + 5000;
-  while (Date.now() < w && document.querySelectorAll("table tbody tr").length > 1) {
-    await new Promise(r => setTimeout(r, 50));
-  }
-  ok("删除后只剩站点派生那条", document.querySelectorAll("table tbody tr").length === 1,
-     "rows=" + document.querySelectorAll("table tbody tr").length);
-  ok("独立目标删完后批量工具栏消失", !$("pbDelBtn"));
+
+  // 只读：页面上不能有任何勾选框/删除入口
+  const boxes = document.querySelectorAll('input[type="checkbox"]').length;
+  ok("页面上没有任何勾选框", boxes === 0, "checkbox=" + boxes);
+  ok("没有 data-pb-id 勾选元素", document.querySelectorAll("[data-pb-id]").length === 0);
+  ok("没有「删除选中」按钮", !$("pbDelBtn"));
+  ok("卡片标题区没有按钮（没有批量工具栏）", !document.querySelector(".card-title button"));
+  ok("表头就是原来的 8 列（没有勾选列）",
+     Array.from(document.querySelectorAll("table thead th")).map(th => th.textContent.trim()).join(",")
+       === "类型,目标,方法/协议,名称,期望结果,超时,探测间隔,发送内容",
+     Array.from(document.querySelectorAll("table thead th")).map(th => th.textContent.trim()).join(","));
+  ok("页面说明自己是只读总览",
+     (document.querySelector(".info-bar").textContent || "").indexOf("只读总览") >= 0);
+
+  // 数据照常展示
+  const body = document.querySelector("table tbody").textContent;
+  ok("列出独立目标与站点派生目标", body.indexOf("独立A") >= 0 && body.indexOf("站点派生") >= 0);
+  ok("期望结果列正常", body.indexOf("200") >= 0 && body.indexOf("仅连通") >= 0);
+  ok("TOML 预览卡片照常渲染", !!document.querySelector(".preview-card"));
 
   const pre = document.createElement("pre");
   pre.id = "__uip";
@@ -359,11 +357,6 @@ class Handler(BaseHTTPRequestHandler):
             before = len(FIXTURES)
             FIXTURES[:] = [s for s in FIXTURES if s["id"] not in ids]
             return self._send(json.dumps({"deleted": before - len(FIXTURES), "not_found": []}))
-        if path == "/api/probes/batch-delete":
-            ids = set(json.loads(body).get("ids") or [])
-            before = len(PROBES)
-            PROBES[:] = [p for p in PROBES if p["id"] not in ids]
-            return self._send(json.dumps({"deleted": before - len(PROBES), "not_found": []}))
         return self._send("{}")
 
 
@@ -385,7 +378,7 @@ def main():
     # 两个页面各启动一次。拨测页会真的把 stub 里的独立目标删掉，所以放最后跑
     pages = [
         (f"http://127.0.0.1:{port}/?uitest=1", "__uitest", "UITEST", "首页 · 站点列表与编辑弹窗"),
-        (f"http://127.0.0.1:{port}/probes?uitest=1", "__uip", "UIP", "拨测管理页 · 批量删除"),
+        (f"http://127.0.0.1:{port}/probes?uitest=1", "__uip", "UIP", "拨测管理页 · 只读总览"),
     ]
     try:
         with tempfile.TemporaryDirectory(prefix="uitest-") as td:

@@ -64,16 +64,6 @@
   }
   .card-title { font-size: 16px; font-weight: 600; color: #1f1f1f; margin-bottom: 16px; }
   .card-title .count { color: var(--c-text-3); font-weight: 500; }
-  /* 批量删除（仅独立端口目标可删） */
-  .batch-bar {
-    display: inline-flex; align-items: center; gap: 10px;
-    margin-left: 12px; font-size: 13px; font-weight: 400;
-  }
-  .batch-bar label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
-  .batch-bar input[type="checkbox"] { width: auto; min-width: 0; margin: 0; }
-  .batch-bar .pb-count { color: var(--c-primary); font-weight: 600; }
-  td.pb-cell, th.pb-cell { width: 34px; text-align: center; }
-  td.pb-cell input[type="checkbox"] { width: auto; min-width: 0; margin: 0; cursor: pointer; }
   table { width: 100%; border-collapse: separate; border-spacing: 0; }
   th, td { padding: 13px 16px; text-align: left; font-size: 14px; vertical-align: middle; border-bottom: 1px solid var(--c-border-2); }
   th { background: #fafafa; font-weight: 500; color: var(--c-text-3); font-size: 13px; white-space: nowrap; position: sticky; top: var(--hd-h); z-index: 5; }
@@ -179,11 +169,10 @@
 
 <div class="container">
   <div class="info-bar">
-    本页总览当前全部拨测目标：<b>HTTP 拨测</b>（来自填了 URL 且勾选「拨测监控」的站点）与
-    <b>端口拨测</b>（来自连接串站点 / 独立端口目标）。
-    <b>带勾选框的是独立端口目标</b>，可勾选后批量删除；由站点派生的目标（行首显示 <code>·</code>）
-    请到<b>首页站点填写页</b>编辑或删除对应站点 —— 添加或编辑资源时勾选「拨测监控」，
-    网站填 URL 走 HTTP 拨测，非网站填连接串自动提取 <code>host:port</code> 走 TCP/UDP 端口拨测。
+    本页为只读总览，展示当前全部拨测目标：<b>HTTP 拨测</b>（来自填了 URL 且勾选「拨测监控」的站点）与
+    <b>端口拨测</b>（来自连接串站点 / 独立端口目标）。新增 / 编辑 / 删除请到<b>首页站点填写页</b>：
+    添加或编辑资源时勾选「拨测监控」，网站填 URL 走 HTTP 拨测，非网站填连接串自动提取
+    <code>host:port</code> 走 TCP/UDP 端口拨测，并可在弹窗中选择<b>协议</b>与<b>连接超时时间</b>。
     categraf 通过 <code>http_provider</code> 从本服务拉取配置，配置版本为内容 MD5，内容不变则不重启采集实例。
   </div>
 
@@ -444,9 +433,6 @@ function renderProbes() {
       ? `<td style="color:#bfbfbf">—</td>`
       : `<td class="mono" title="${escapeHtml(p.send || "")}">${escapeHtml(escCtl(p.send || "—"))}</td>`;
     return `<tr>
-    <td class="pb-cell">${p.source === "probe"
-      ? `<input type="checkbox" data-pb-id="${escapeHtml(p.id)}" onchange="toggleProbeSel(this)">`
-      : `<span style="color:#d9d9d9" title="该目标由站点派生，请到首页编辑/删除对应站点">·</span>`}</td>
     <td>${kindTag}</td>
     <td class="mono url">${escapeHtml(p.url)}</td>
     <td>${method}</td>
@@ -459,69 +445,15 @@ function renderProbes() {
     ${send}
   </tr>`;
   }).join("");
-  const independent = probes.filter(p => p.source === "probe").length;
   $("content").innerHTML = `<div class="card">
-    <div class="card-title">拨测目标 <span class="count">(${probes.length})</span>${independent ? `
-      <span class="batch-bar">
-        <label><input type="checkbox" id="pbAll" onchange="toggleAllProbeSel(this.checked)"> 全选独立目标</label>
-        <span class="pb-count" id="pbCount"></span>
-        <button class="btn btn-danger btn-sm" id="pbDelBtn" onclick="batchDeleteProbes(this)" disabled>删除选中</button>
-      </span>` : ""}</div>
+    <div class="card-title">拨测目标 <span class="count">(${probes.length})</span></div>
     <table>
       <thead><tr>
-        <th class="pb-cell"></th>
         <th>类型</th><th>目标</th><th>方法/协议</th><th>名称</th><th>期望结果</th><th>超时</th><th>探测间隔</th><th>发送内容</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
   </div>`;
-  syncProbeBatch();
-}
-
-// ==================== 批量删除（仅独立端口目标） ====================
-// 站点派生的目标不属于本页：删它要去首页改站点，所以行里只给个「·」占位不勾选
-let probeSel = new Set();
-
-function toggleProbeSel(cb) {
-  if (cb.checked) probeSel.add(cb.dataset.pbId);
-  else probeSel.delete(cb.dataset.pbId);
-  syncProbeBatch();
-}
-
-function toggleAllProbeSel(checked) {
-  $("content").querySelectorAll("input[data-pb-id]").forEach(cb => {
-    cb.checked = checked;
-    if (checked) probeSel.add(cb.dataset.pbId);
-    else probeSel.delete(cb.dataset.pbId);
-  });
-  syncProbeBatch();
-}
-
-function syncProbeBatch() {
-  const all = $("content").querySelectorAll("input[data-pb-id]");
-  if (!$("pbDelBtn") || !all.length) return;
-  const total = all.length;
-  const n = probeSel.size;
-  $("pbCount").textContent = `已选 ${n} / ${total}`;
-  $("pbDelBtn").disabled = n === 0;
-  $("pbDelBtn").textContent = n ? `删除选中（${n} 条）` : "删除选中";
-  $("pbAll").checked = total > 0 && n === total;
-}
-
-async function batchDeleteProbes(btn) {
-  const ids = [...probeSel];
-  if (!ids.length) { showToast("请先勾选要删除的目标", "error"); return; }
-  if (!confirm(`确定删除选中的 ${ids.length} 个独立拨测目标？此操作不可恢复。`)) return;
-  if (btn) { btn.disabled = true; btn.dataset.orig = btn.textContent; btn.textContent = "删除中…"; }
-  try {
-    const res = await api("/api/probes/batch-delete", { method: "POST", body: JSON.stringify({ ids }) });
-    showToast(`已删除 ${res.deleted || 0} 个目标`);
-    probeSel = new Set();
-    loadProbes();
-  } catch (e) {
-    showToast(e.message, "error");
-    if (btn) { btn.disabled = false; btn.textContent = btn.dataset.orig || "删除选中"; }
-  }
 }
 
 function openAddModal() {
@@ -625,8 +557,7 @@ async function confirmDelete() {
   }
 }
 
-// 站点派生的目标仍只能在首页维护；独立端口目标支持在本页勾选后批量删除。
-// 下面 openAddModal / saveProbe / confirmDelete 是历史单条增删改的残留实现，已无入口调用。
+// 本页为只读：端口拨测目标统一在首页站点填写页维护，此处仅展示不再提供增删改。
 
 loadProbes();
 </script>

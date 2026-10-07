@@ -1313,16 +1313,12 @@ def list_probes(authorization: str | None = Header(default=None)):
 def list_probe_targets(authorization: str | None = Header(default=None)):
     """拨测目标总览（只读）：站点派生的 HTTP/端口目标 + 独立端口拨测目标。
     给拨测管理页统一展示，与 categraf 实际拉取的配置一致。
-    独立 probe 目标（probes.json）没有 kind 字段，统一补为端口拨测；
-    并标记 source：站点派生的只能在首页改站点，独立目标可以在本页删，
-    不标的话页面上分不清哪些能删。"""
+    该页只读：站点派生目标去首页改站点，独立目标走 /api/probes 增删改。
+    独立 probe 目标（probes.json）没有 kind 字段，统一补为端口拨测。"""
     _require_admin(authorization)
     targets = _all_probe_targets()
-    # 用下标区分而不是按 id：站点和独立目标都是 token_hex(4)，理论上可能撞 id
-    n_site = len(targets) - len(_load_probes())
-    for i, t in enumerate(targets):
+    for t in targets:
         t.setdefault("kind", KIND_NET)
-        t["source"] = "site" if i < n_site else "probe"
     return targets
 
 
@@ -1429,30 +1425,6 @@ def delete_probe(probe_id: str, authorization: str | None = Header(default=None)
 
     _load_mutate_probes(_mutate)
     return {"ok": True}
-
-
-class BatchDeleteProbesIn(BaseModel):
-    ids: list[str] = Field(min_length=1, max_length=500)
-
-
-@app.post("/api/probes/batch-delete")
-def batch_delete_probes(body: BatchDeleteProbesIn, authorization: str | None = Header(default=None)):
-    """批量删除端口拨测目标（管理员）。与站点批量删除同一套语义：
-    一次读-改-写删完，返回删掉的数量与没找到的 id，单个不存在不算错误。"""
-    _require_admin(authorization)
-    want = {i.strip() for i in body.ids if isinstance(i, str) and i.strip()}
-    if not want:
-        raise HTTPException(status_code=400, detail="未指定要删除的条目")
-    captured: dict = {}
-
-    def _mutate(probes):
-        existing = {p.get("id") for p in probes}
-        captured["deleted"] = len(existing & want)
-        captured["not_found"] = sorted(want - existing)
-        probes[:] = [p for p in probes if p.get("id") not in want]
-
-    _load_mutate_probes(_mutate)
-    return {"deleted": captured["deleted"], "not_found": captured["not_found"]}
 
 
 def _validate_host_port(url: str) -> None:

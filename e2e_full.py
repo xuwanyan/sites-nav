@@ -278,34 +278,12 @@ def main():
         check("删除独立拨测目标", pd.status_code == 200, f"status={pd.status_code}")
         check("删除后不在列表", all(p["id"] != probe_id for p in
                                   requests.get(f"{BASE}/api/probes", headers=H, timeout=5).json()))
-
-        # ── 5b. 拨测目标批量删除 + 来源标记 ─────────────────────────────
-        made_p = []
-        for i in range(2):
-            rp = requests.post(f"{BASE}/api/probes", headers=H,
-                               json={"url": f"10.9.9.{30 + i}:6379", "job": f"{SP}批量探针{i}"}, timeout=5)
-            if rp.status_code == 200:
-                made_p.append(rp.json()["id"])
-        check("批量删除拨测目标：先建 2 个", len(made_p) == 2, f"n={len(made_p)}")
-        pt = requests.get(f"{BASE}/api/probe-targets", headers=H, timeout=5).json()
-        check("目标总览带 source 标记", bool(pt) and all("source" in t for t in pt),
-              f"缺标记={[t.get('url') for t in pt if 'source' not in t][:3]}")
-        check("能区分站点派生与独立目标",
-              any(t["source"] == "site" for t in pt) and any(t["source"] == "probe" for t in pt),
-              f"site={sum(1 for t in pt if t['source'] == 'site')} probe={sum(1 for t in pt if t['source'] == 'probe')}")
-        if len(made_p) == 2:
-            bp = requests.post(f"{BASE}/api/probes/batch-delete", headers=H,
-                               json={"ids": made_p + ["deadbeef"]}, timeout=10)
-            check("批量删除拨测目标返回数量", bp.status_code == 200 and bp.json().get("deleted") == 2,
-                  str(bp.json())[:140])
-            check("批量删除拨测目标报告 not_found", bp.json().get("not_found") == ["deadbeef"],
-                  str(bp.json())[:140])
-            check("批量删除后列表不含它们",
-                  all(p["id"] not in made_p for p in
-                      requests.get(f"{BASE}/api/probes", headers=H, timeout=5).json()))
-            check("批量删除拨测目标空列表 → 422",
-                  requests.post(f"{BASE}/api/probes/batch-delete", headers=H,
-                                json={"ids": []}, timeout=5).status_code == 422)
+        # 拨测页是只读总览：不应存在"批量删除拨测目标"入口。
+        # 期望 405（路径被 /api/probes/{id} 吃掉但方法不允许）或 404
+        rgone = requests.post(f"{BASE}/api/probes/batch-delete", headers=H,
+                              json={"ids": ["aaaaaaaa"]}, timeout=5)
+        check("拨测目标没有批量删除端点（本页只读）", rgone.status_code in (404, 405),
+              f"status={rgone.status_code}")
 
         # ── 5c. 跨页一致性（两个页面会不会互相残留） ─────────────────────
         # 独立拨测目标存在 data/probes.json，它**不是站点**，所以首页本来就不会有它；
@@ -319,7 +297,7 @@ def main():
             check("独立拨测目标出现在拨测页",
                   any(t["id"] == xid for t in
                       requests.get(f"{BASE}/api/probe-targets", headers=H, timeout=5).json()))
-            requests.post(f"{BASE}/api/probes/batch-delete", headers=H, json={"ids": [xid]}, timeout=5)
+            requests.delete(f"{BASE}/api/probes/{xid}", headers=H, timeout=5)
             check("删掉后拨测页不再有它",
                   all(t["id"] != xid for t in
                       requests.get(f"{BASE}/api/probe-targets", headers=H, timeout=5).json()))
@@ -372,8 +350,6 @@ def main():
             ("配置预览", lambda: requests.get(f"{BASE}/api/config/preview", headers=HU, timeout=5)),
             ("批量删除", lambda: requests.post(f"{BASE}/api/sites/batch-delete", headers=HU,
                                            json={"ids": ["aaaaaaaa"]}, timeout=5)),
-            ("批量删除拨测目标", lambda: requests.post(f"{BASE}/api/probes/batch-delete", headers=HU,
-                                                json={"ids": ["aaaaaaaa"]}, timeout=5)),
         ]
         for label, fn in forbidden:
             check(f"普通用户被拒：{label}", fn().status_code == 403)
