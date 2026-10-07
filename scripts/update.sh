@@ -57,33 +57,44 @@ BOOTSTRAP_URLS+=(
 
 TMP_SH="$(mktemp /tmp/bootstrap.sh.XXXXXX)"
 GOT_URL=""
-for url in "${BOOTSTRAP_URLS[@]}"; do
-  for attempt in 1 2; do
-    if curl -fsSL --connect-timeout 6 --max-time 60 "$url" -o "$TMP_SH" 2>/dev/null; then
-      # 校验：必须真是 shell 脚本。镜像返回 502/HTML 错误页时 curl 也是 0，
-      # 不校验就会把错误页当脚本执行，报一堆莫名其妙的语法错。
-      if head -n1 "$TMP_SH" 2>/dev/null | grep -q '^#!'; then
-        GOT_URL="$url"
-        break 2
-      fi
-      warn "内容不像脚本（可能是错误页），换下一个镜像: $url"
-      break
-    fi
-    warn "下载失败，重试 $attempt/2: $url"
-    sleep 2
-  done
-done
 
-if [ -z "$GOT_URL" ]; then
-  rm -f "$TMP_SH"
-  die "所有镜像都下不到 bootstrap.sh。
+# 优先用仓库里的本地 bootstrap.sh。原因：raw 文件的镜像会按 URL 缓存，而
+# "…/main/scripts/bootstrap.sh" 不带版本号 → 可能拿到旧内容（线上就踩到了：
+# 下载到的 bootstrap 缺了刚提交的修复）。本地副本至少是上次成功更新时的版本，
+# 而且省一次网络往返。要强制走网络：FORCE_REMOTE_BOOTSTRAP=1
+LOCAL_BS="${APP_DIR}/scripts/bootstrap.sh"
+if [ -f "$LOCAL_BS" ] && [ "${FORCE_REMOTE_BOOTSTRAP:-0}" != "1" ]; then
+  cp -f "$LOCAL_BS" /tmp/bootstrap.sh
+  log "bootstrap.sh 来源: 仓库本地 $LOCAL_BS（强制走网络：FORCE_REMOTE_BOOTSTRAP=1）"
+else
+  for url in "${BOOTSTRAP_URLS[@]}"; do
+    for attempt in 1 2; do
+      if curl -fsSL --connect-timeout 6 --max-time 60 "$url" -o "$TMP_SH" 2>/dev/null; then
+        # 校验：必须真是 shell 脚本。镜像返回 502/HTML 错误页时 curl 也是 0，
+        # 不校验就会把错误页当脚本执行，报一堆莫名其妙的语法错。
+        if head -n1 "$TMP_SH" 2>/dev/null | grep -q '^#!'; then
+          GOT_URL="$url"
+          break 2
+        fi
+        warn "内容不像脚本（可能是错误页），换下一个镜像: $url"
+        break
+      fi
+      warn "下载失败，重试 $attempt/2: $url"
+      sleep 2
+    done
+  done
+
+  if [ -z "$GOT_URL" ]; then
+    rm -f "$TMP_SH"
+    die "所有镜像都下不到 bootstrap.sh。
   若服务器直连 GitHub 不通，任选其一后重跑：
     1) export GH_MIRROR=https://ghproxy.net
     2) git config --global url.\"https://ghproxy.net/https://github.com/\".insteadOf \"https://github.com/\"
   注意：/tmp/bootstrap.sh 未被改动，仍可手动 sudo -E bash /tmp/bootstrap.sh 用旧版脚本。"
+  fi
+  log "bootstrap.sh 来源: $GOT_URL"
+  mv "$TMP_SH" /tmp/bootstrap.sh     # 原子替换：下载失败时旧脚本原样保留
 fi
-log "bootstrap.sh 来源: $GOT_URL"
-mv "$TMP_SH" /tmp/bootstrap.sh     # 原子替换：下载失败时旧脚本原样保留
 
 # ── 2. 准备：git 更新 + 构建镜像 + 配 .env + 修 data 权限（不启动） ──
 log "运行 bootstrap（更新代码 + 构建镜像）"
