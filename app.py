@@ -1755,14 +1755,16 @@ def _parse_tri_bool(v) -> bool | None:
     return s in ("1", "true", "yes", "是", "y")
 
 
-def _normalize_import_row(row: dict, idx: int) -> dict:
+def _normalize_import_row(row: dict, where: str) -> dict:
+    """where 是给用户看的定位串，如 CSV 的「第3行」/ JSON 的「第2条」——
+    两种格式的行号语义不同（CSV 有表头，JSON 是数组元素），由调用方定。"""
     name = str(row.get("name") or row.get("系统名称") or "").strip()
     if not name:
-        raise ValueError(f"第{idx}行缺少系统名称")
+        raise ValueError(f"{where}缺少系统名称")
     kind = str(row.get("kind") or row.get("资源类型") or "网站").strip() or "网站"
     env = str(row.get("env") or row.get("环境标识") or "").strip()
     if env not in ("生产环境", "测试环境"):
-        raise ValueError(f"第{idx}行「{name}」环境标识必须是 生产环境 或 测试环境")
+        raise ValueError(f"{where}「{name}」环境标识必须是 生产环境 或 测试环境")
     monitor = _parse_bool(row.get("monitor") if "monitor" in row else row.get("拨测监控"))
     # 占位符归一必须在「至少填一个」校验之前：一整行 URL 都是 "-" 时应当报"什么都没填"
     urls = [
@@ -1773,7 +1775,7 @@ def _normalize_import_row(row: dict, idx: int) -> dict:
     is_memo = kind == "备忘录"
     # URL 三字段和连接串至少填一个（非 URL 类资源允许只填连接串）；备忘录是纯文本展示介质，什么都不用填
     if not is_memo and not any(urls) and not connection:
-        raise ValueError(f"第{idx}行「{name}」域名/公网/内网/连接串至少填一个")
+        raise ValueError(f"{where}「{name}」域名/公网/内网/连接串至少填一个")
     result = {
         # 站点名称保持原样（不带后缀），同站点双环境靠 name 相同 + env 不同表达
         "name": name,
@@ -1856,9 +1858,13 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
         ("probe_cert_expire", "采集证书过期时间", "probe_cert_expire"),
     ]
 
-    for idx, raw_row in enumerate(rows, start=2):  # 从2开始：CSV 第1行是表头
+    # 行号语义按格式走：CSV 第 1 行是表头，所以数据从「第2行」起；JSON 是数组，从「第1条」起。
+    # 原来一律按 CSV 编号，JSON 导入报错会说「第2行」而实际是第 1 个元素，很误导。
+    _is_csv = fmt == "csv"
+    for n, raw_row in enumerate(rows, start=1):
+        where = f"第{n + 1}行" if _is_csv else f"第{n}条"
         try:
-            item_data = _normalize_import_row(raw_row, idx)
+            item_data = _normalize_import_row(raw_row, where)
             # 走一遍 SiteIn 校验（长度/pattern/URL 格式），与 API 创建路径一致
             validated = SiteIn(**{
                 "name": item_data["name"],
@@ -1899,7 +1905,7 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
                     filled.add(key)
             parsed.append((validated, filled))
         except HTTPException as exc:
-            skipped.append({"reason": f"第{idx}行：{exc.detail}"})
+            skipped.append({"reason": f"{where}：{exc.detail}"})
         except (ValueError, Exception) as exc:  # noqa: BLE001
             skipped.append({"reason": str(exc)})
 
