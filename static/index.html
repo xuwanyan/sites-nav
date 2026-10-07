@@ -825,7 +825,7 @@
         <div class="form-row">
           <div class="form-group" style="max-width:150px;">
             <label>请求方法</label>
-            <select id="f_probe_method">
+            <select id="f_probe_method" onchange="updateProbeMethodFields()">
               <option value="">默认（GET）</option>
               <option value="GET">GET</option>
               <option value="POST">POST</option>
@@ -842,12 +842,12 @@
               <option value="false">不跟随</option>
             </select>
           </div>
-          <div class="form-group">
+          <div class="form-group" id="probeHeadersGroup">
             <label>请求头（JSON 数组）</label>
             <input type="text" id="f_probe_headers" maxlength="2000" placeholder='["X-Key","val"]'>
           </div>
         </div>
-        <div class="form-row">
+        <div class="form-row" id="probeBodyRow">
           <div class="form-group">
             <label>请求 Body</label>
             <textarea id="f_probe_body" maxlength="4000" placeholder='{"key":"value"}'></textarea>
@@ -1037,7 +1037,7 @@
         </div>
         <div class="form-group" style="max-width:130px;">
           <label>请求方法</label>
-          <select id="probeMethod">
+          <select id="probeMethod" onchange="updateProbeQuickMethodFields()">
             <option value="">默认（GET）</option>
             <option value="GET">GET</option>
             <option value="POST">POST</option>
@@ -1055,11 +1055,11 @@
           </select>
         </div>
       </div>
-      <div class="form-group">
+      <div class="form-group" id="probeHeadersQuickGroup">
         <label>请求头（JSON 数组）</label>
         <input type="text" id="probeHeaders" maxlength="2000" placeholder='["X-Key","val"]'>
       </div>
-      <div class="form-group">
+      <div class="form-group" id="probeBodyQuickGroup">
         <label>请求 Body</label>
         <textarea id="probeBody" maxlength="4000" placeholder='{"key":"value"}'></textarea>
       </div>
@@ -2399,6 +2399,7 @@ function updateMonitorBtn() {
     $("probeNetAdvBlock").style.display = "none";
   }
   updateProbeTls();
+  updateProbeMethodFields();
 }
 
 // ==================== 快捷加入/取消监控 ====================
@@ -2681,6 +2682,25 @@ function updateProbeTls() {
   }
 }
 
+// 请求头 / 请求 Body 按「请求方法」显隐：GET/HEAD 通常不带 body，空着的这两栏纯占版面。
+// 但字段只要已有内容就保持可见 —— 否则会出现"界面看不到、保存却带着值"的鬼数据
+// （CSV / 接口导入进来的记录尤其容易踩）。请求头同理：GET 也常带鉴权头，有值就得看得见改得动。
+const METHOD_HAS_BODY = ["POST", "PUT", "PATCH", "DELETE"];
+function _syncMethodFields(methodEl, headersEl, bodyEl, headersBox, bodyBox) {
+  const m = ((methodEl && methodEl.value) || "GET").toUpperCase();
+  const hasBody = METHOD_HAS_BODY.indexOf(m) >= 0;
+  if (bodyBox) bodyBox.style.display = (hasBody || (bodyEl.value || "").trim()) ? "" : "none";
+  if (headersBox) headersBox.style.display = (hasBody || (headersEl.value || "").trim()) ? "" : "none";
+}
+function updateProbeMethodFields() {
+  _syncMethodFields($("f_probe_method"), $("f_probe_headers"), $("f_probe_body"),
+                    $("probeHeadersGroup"), $("probeBodyRow"));
+}
+function updateProbeQuickMethodFields() {
+  _syncMethodFields($("probeMethod"), $("probeHeaders"), $("probeBody"),
+                    $("probeHeadersQuickGroup"), $("probeBodyQuickGroup"));
+}
+
 // 拨测地址是 HTTPS 时才显示 TLS 配置块（与新增弹框的 updateProbeTls 同一规则）
 function updateProbeQuickTls() {
   const s = sites.find(x => x.id === $("probeSiteId").value);
@@ -2784,6 +2804,7 @@ function openProbeModal(btn) {
   }
   toggleProbeQuickSkip();
   updateProbeQuickTls();
+  updateProbeQuickMethodFields();
   $("probeModal").classList.add("show");
   setTimeout(() => { (isPort ? $("probeProtocol") : $("probeCodes")).focus(); }, 100);
 }
