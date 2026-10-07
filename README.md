@@ -274,6 +274,27 @@ python run.py          # 带 --reload，改 app.py 自动重载
 
 > 注意：每次热重载都会轮换 `TOKEN_SECRET`，保存 `app.py` 后需要重新登录。
 
+## 测试
+
+```bash
+python tests/run_all.py          # 一键跑全部 7 个套件
+```
+
+分两类，共约 310 项断言：
+
+| 套件 | 类型 | 覆盖 |
+|---|---|---|
+| `tests/test_toml_gen.py` | 离线 | TOML 生成、body 往返无损、转义、去重、version 随内容变化 |
+| `tests/test_url_validation.py` | 离线 | URL/端口/IP 校验，并把前端函数抽出来跑 node 做**前后端对表** |
+| `tests/test_api_units.py` | 离线 | 登录限流（伪造 IP，不会锁本机）、provider 鉴权、密码策略、**持久化/备份轮转/损坏恢复**（临时目录） |
+| `tests/test_frontend_payload.py` | 离线 | `sitePayload` 必须覆盖 `SiteIn` 全部字段、草稿快照往返（node 真跑） |
+| `tests/test_ui_browser.py` | 离线 | 无头浏览器加载真实 `index.html`：显隐逻辑、弹窗草稿、下拉回填（需要 Edge/Chrome） |
+| `e2e_import.py` | 在线 | 导入/查重/增量更新/拨测目标冲突 |
+| `e2e_full.py` | 在线 | 全接口：站点 CRUD 与校验、快捷监控字段保全、导出、拨测 CRUD、用户与角色权限、provider、备份落盘 |
+
+在线套件需要服务已在 `http://127.0.0.1:8000` 运行（`python run.py`）；没起会自动跳过并提示。
+两个 e2e 都自建 `E2E-` / `E2E2-` 前缀的数据和 `e2e2_` 前缀的测试用户，结束时清理，不动真实数据。
+
 ## 从旧版 users.json 迁移
 
 用户与权限从 JSON 迁到 MySQL 时，用一次性脚本导入（bcrypt 哈希原样搬运，**密码不用重设**）：
