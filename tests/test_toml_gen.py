@@ -216,6 +216,39 @@ for label, url, ce, want_drop in CERT_CASES:
     check(f"metrics_drop 只在 https 上生效：{label}", got == want_drop, f"metrics_drop={got}")
 
 
+# ── 7. 响应内容匹配（expect_response_substring / expect_response_regular_expression） ──
+# categraf 侧是"空值就不做该项检查"，所以只有非空才该写进 TOML。
+_t = http_target("", id="a1b2c3d4", url="https://a.example.com", expect_substring="statusok")
+_txt = toml_gen.generate_http_toml([_t])
+check("响应包含写进 TOML", 'expect_response_substring = "statusok"' in _txt, _txt[-90:].strip())
+_t2 = http_target("", id="a1b2c3d4", url="https://a.example.com", expect_regex=r'"code":\s*0')
+_txt2 = toml_gen.generate_http_toml([_t2])
+check("响应正则写进 TOML",
+      'expect_response_regular_expression = "\\"code\\":\\\\s*0"' in _txt2, _txt2[-110:].strip())
+_t3 = http_target("", id="a1b2c3d4", url="https://a.example.com")
+_txt3 = toml_gen.generate_http_toml([_t3])
+check("留空不写这两项", "expect_response_substring" not in _txt3
+      and "expect_response_regular_expression" not in _txt3, _txt3[-90:].strip())
+# 只有响应匹配不同 → 必须拆成两个 instance（否则其中一个的检查会被另一个覆盖）
+_txt4 = toml_gen.generate_http_toml([
+    http_target("", id="a1b2c3d4", url="https://a.example.com", expect_substring="aaa"),
+    http_target("", id="b1b2c3d4", url="https://b.example.com", expect_substring="bbb"),
+])
+check("响应包含不同 → 拆成两个 instance", _txt4.count("[[instances]]") == 2,
+      f"instances={_txt4.count('[[instances]]')}")
+
+# ── 8. 响应正则校验（Go RE2 不支持的构造必须拦下） ──
+# categraf 用 regexp.MustCompile：非法正则会 panic，整个 http_response 插件起不来
+REGEX_OK = ["", r'"code":\s*0', r"^OK$", r"a{1,3}b", r"(?i)ok", r"a\+b"]
+REGEX_BAD = [r"a(b", r"a[", r"*abc", r"(?P<n>x", r"\1", r"(?=x)", r"(?!x)", r"(?<=x)", r"(?>x)", r"a*+", r"a++"]
+for rx in REGEX_OK:
+    err = toml_gen.validate_regex(rx)
+    check(f"正则通过：{rx!r}", err == "", err)
+for rx in REGEX_BAD:
+    err = toml_gen.validate_regex(rx)
+    check(f"正则被拒：{rx!r}", bool(err), err or "竟然通过了")
+
+
 ok = sum(1 for _, r in RESULTS if r)
 print(f"\n{ok}/{len(RESULTS)} passed")
 if ok != len(RESULTS):

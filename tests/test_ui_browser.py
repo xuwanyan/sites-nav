@@ -27,6 +27,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "static" / "index.html"
+PROBES_PAGE = ROOT / "static" / "probes.html"
+BOOT = ("<script>localStorage.setItem('nav_token','uitest');"
+        "localStorage.setItem('nav_role','admin');</script>")
 RESULTS = []
 
 
@@ -78,6 +81,64 @@ FIXTURES = [
     # s3：备忘录 → 不参与拨测，监控勾选框必须禁用
     site("s3a2b3c4", "备忘录条目", kind="备忘录", memo_content="纯文本正文"),
 ]
+
+# 拨测页 fixture：2 个独立目标（可删）+ 1 个站点派生（本页删不了）
+PROBES = [
+    {"id": "p1a2b3c4", "url": "10.9.9.1:6379", "job": "独立A", "protocol": "tcp", "timeout": "",
+     "read_timeout": "", "send": "", "expect": "", "kind": "net", "source": "probe"},
+    {"id": "p2a2b3c4", "url": "10.9.9.2:6379", "job": "独立B", "protocol": "udp", "timeout": "3s",
+     "read_timeout": "", "send": "", "expect": "", "kind": "net", "source": "probe"},
+    {"id": "s1a2b3c4", "url": "oa.example.com", "job": "站点派生", "kind": "http", "method": "GET",
+     "expected_status_codes": "200", "source": "site"},
+]
+
+PROBES_JS = r"""
+<script>
+window.confirm = function () { return true; };
+(async function () {
+  const out = [];
+  const ok = (n, c, d) => out.push({ name: n, ok: !!c, detail: d === undefined ? "" : String(d) });
+  const $ = id => document.getElementById(id);
+
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && !document.querySelector("table tbody tr")) {
+    await new Promise(r => setTimeout(r, 50));
+  }
+  const rows = document.querySelectorAll("table tbody tr").length;
+  ok("拨测页渲染出 3 行", rows === 3, "rows=" + rows);
+  const boxes = document.querySelectorAll("input[data-pb-id]").length;
+  ok("只有独立目标带勾选框（2 个）", boxes === 2, "boxes=" + boxes);
+  ok("站点派生行没有勾选框", !document.querySelector("input[data-pb-id][value^='s1']"));
+  ok("批量工具栏出现", !!$("pbAll") && !!$("pbDelBtn"));
+  ok("未勾选时删除按钮禁用", $("pbDelBtn").disabled === true);
+  ok("未勾选时计数为 0", ($("pbCount").textContent || "").indexOf("已选 0 / 2") >= 0, $("pbCount").textContent);
+  const one = document.querySelector("input[data-pb-id]");
+  one.checked = true; toggleProbeSel(one);
+  ok("勾一个后计数为 1", ($("pbCount").textContent || "").indexOf("已选 1 / 2") >= 0, $("pbCount").textContent);
+  $("pbAll").checked = true; toggleAllProbeSel(true);
+  ok("全选后计数为 2", ($("pbCount").textContent || "").indexOf("已选 2 / 2") >= 0, $("pbCount").textContent);
+  ok("两个勾选框都选上", Array.from(document.querySelectorAll("input[data-pb-id]")).every(cb => cb.checked));
+  await batchDeleteProbes($("pbDelBtn"));
+  let w = Date.now() + 5000;
+  while (Date.now() < w && document.querySelectorAll("table tbody tr").length > 1) {
+    await new Promise(r => setTimeout(r, 50));
+  }
+  ok("删除后只剩站点派生那条", document.querySelectorAll("table tbody tr").length === 1,
+     "rows=" + document.querySelectorAll("table tbody tr").length);
+  ok("独立目标删完后批量工具栏消失", !$("pbDelBtn"));
+
+  const pre = document.createElement("pre");
+  pre.id = "__uip";
+  pre.textContent = "UIP" + JSON.stringify(out);
+  document.body.appendChild(pre);
+})().catch(e => {
+  const pre = document.createElement("pre");
+  pre.id = "__uip";
+  pre.textContent = "UIP" + JSON.stringify([{ name: "拨测页脚本异常: " + e.message, ok: false, detail: "" }]);
+  document.body.appendChild(pre);
+});
+</script>
+"""
 
 CHECK_JS = r"""
 <script>
@@ -263,10 +324,13 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path in ("/", "/admin", "/index.html"):
             page = STATIC.read_text(encoding="utf-8")
-            boot = ("<script>localStorage.setItem('nav_token','uitest');"
-                    "localStorage.setItem('nav_role','admin');</script>")
-            page = page.replace("<head>", "<head>" + boot, 1)
+            page = page.replace("<head>", "<head>" + BOOT, 1)
             page = page.replace("</body>", CHECK_JS + "</body>", 1)
+            return self._send(page, "text/html; charset=utf-8")
+        if path == "/probes":
+            page = PROBES_PAGE.read_text(encoding="utf-8")
+            page = page.replace("<head>", "<head>" + BOOT, 1)
+            page = page.replace("</body>", PROBES_JS + "</body>", 1)
             return self._send(page, "text/html; charset=utf-8")
         if path == "/api/sites":
             return self._send(json.dumps(FIXTURES, ensure_ascii=False))
@@ -274,7 +338,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send("{}")
         if path == "/api/monitor-config":
             return self._send(json.dumps({"enabled": True, "state": "ok", "reason": ""}))
-        if path in ("/api/probes", "/api/probe-targets", "/api/users"):
+        if path == "/api/probe-targets":
+            return self._send(json.dumps(PROBES, ensure_ascii=False))
+        if path == "/api/config/preview":
+            return self._send(json.dumps({"version": "abc123",
+                                          "http_toml": "[[instances]]\n",
+                                          "net_toml": "[[instances]]\n"}))
+        if path in ("/api/probes", "/api/users"):
             return self._send("[]")
         return self._send("{}")
 
@@ -289,6 +359,11 @@ class Handler(BaseHTTPRequestHandler):
             before = len(FIXTURES)
             FIXTURES[:] = [s for s in FIXTURES if s["id"] not in ids]
             return self._send(json.dumps({"deleted": before - len(FIXTURES), "not_found": []}))
+        if path == "/api/probes/batch-delete":
+            ids = set(json.loads(body).get("ids") or [])
+            before = len(PROBES)
+            PROBES[:] = [p for p in PROBES if p["id"] not in ids]
+            return self._send(json.dumps({"deleted": before - len(PROBES), "not_found": []}))
         return self._send("{}")
 
 
@@ -304,29 +379,33 @@ def main():
     srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{port}/?uitest=1"
-    print(f"stub 服务: {url}")
+    print(f"stub 服务: http://127.0.0.1:{port}/")
     print(f"浏览器: {browser}\n")
 
-    dom = ""
+    # 两个页面各启动一次。拨测页会真的把 stub 里的独立目标删掉，所以放最后跑
+    pages = [
+        (f"http://127.0.0.1:{port}/?uitest=1", "__uitest", "UITEST", "首页 · 站点列表与编辑弹窗"),
+        (f"http://127.0.0.1:{port}/probes?uitest=1", "__uip", "UIP", "拨测管理页 · 批量删除"),
+    ]
     try:
         with tempfile.TemporaryDirectory(prefix="uitest-") as td:
-            proc = subprocess.run(
-                [browser, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
-                 f"--user-data-dir={Path(td) / 'prof'}", "--window-size=1280,900",
-                 "--virtual-time-budget=12000", "--dump-dom", url],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
-            dom = proc.stdout or ""
+            for i, (url, pre_id, marker, label) in enumerate(pages):
+                print(f"--- {label} ---")
+                proc = subprocess.run(
+                    [browser, "--headless=new", "--disable-gpu", "--no-first-run",
+                     "--no-default-browser-check", f"--user-data-dir={Path(td) / ('prof' + str(i))}",
+                     "--window-size=1280,900", "--virtual-time-budget=12000", "--dump-dom", url],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+                dom = proc.stdout or ""
+                m = re.search(rf'<pre id="{pre_id}">{marker}(.*?)</pre>', dom, re.S)
+                if not m:
+                    check(f"{label}：拿到页面内的测试结果", False,
+                          f"DOM 长度={len(dom)}；页面可能没加载完或脚本报错")
+                    continue
+                for r in json.loads(html_mod.unescape(m.group(1))):
+                    check(r["name"], r["ok"], r.get("detail", ""))
     finally:
         srv.shutdown()
-
-    m = re.search(r'<pre id="__uitest">UITEST(.*?)</pre>', dom, re.S)
-    if not m:
-        check("拿到页面内的测试结果", False, f"DOM 长度={len(dom)}；可能页面没加载完")
-        print(f"\n{sum(1 for _, o in RESULTS if o)}/{len(RESULTS)} passed")
-        return 1
-    for r in json.loads(html_mod.unescape(m.group(1))):
-        check(r["name"], r["ok"], r.get("detail", ""))
 
     passed = sum(1 for _, o in RESULTS if o)
     print(f"\n{passed}/{len(RESULTS)} passed")

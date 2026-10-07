@@ -33,6 +33,31 @@ def validate_status_codes(s: str) -> str:
     return ""
 
 
+# Go RE2 不支持的写法：Python 的 re 能编过，但 categraf 那边是
+# regexp.MustCompile，非法正则会 panic → 整个 http_response 插件起不来，
+# 所有 HTTP 拨测一起中断。所以下面这些构造要提前拦掉。
+_RE2_UNSUPPORTED = (
+    (re.compile(r"\\[1-9]"), "反向引用（如 \\1）"),
+    (re.compile(r"\(\?<?[=!]"), "前后瞻断言（(?= / (?<= / (?! / (?<!）"),
+    (re.compile(r"\(\?>"), "原子组（(?>）"),
+    (re.compile(r"[*+?]\+|\}\+"), "占有量词（*+ / ++ / ?+ / }+）"),
+)
+
+
+def validate_regex(s: str) -> str:
+    """校验响应匹配正则：非法返回错误信息，合法返回空串（空串合法 = 不做内容匹配）"""
+    if not s:
+        return ""
+    try:
+        re.compile(s)
+    except re.error as e:
+        return f"响应正则非法：{e}"
+    for pat, why in _RE2_UNSUPPORTED:
+        if pat.search(s):
+            return f"响应正则用了 Go RE2 不支持的写法：{why}（categraf 会初始化失败，请改写）"
+    return ""
+
+
 # ── HTTP 拨测配置画像 ──
 
 def cert_expire_wanted(t: dict) -> bool:
@@ -54,6 +79,9 @@ def _http_profile_key(t: dict) -> str:
         "interval": t.get("interval", ""),
         "method": t.get("method", "GET"),
         "expected_status_codes": t.get("expected_status_codes", "200"),
+        # 响应内容匹配：留空 = 不检查（categraf 侧同样是"空则跳过该项检查"）
+        "expect_substring": t.get("expect_substring", ""),
+        "expect_regex": t.get("expect_regex", ""),
         "response_timeout": t.get("response_timeout", ""),
         "body": t.get("body", ""),
         "headers": _header_key(t.get("headers", [])),
@@ -124,6 +152,8 @@ def generate_http_toml(targets: list[dict]) -> str:
                     "interval": t.get("interval", ""),
                     "method": t.get("method", "GET"),
                     "expected_status_codes": t.get("expected_status_codes", "200"),
+                    "expect_substring": t.get("expect_substring", ""),
+                    "expect_regex": t.get("expect_regex", ""),
                     "response_timeout": t.get("response_timeout", ""),
                     "body": t.get("body", ""),
                     "headers": t.get("headers", []),
@@ -193,6 +223,13 @@ def _emit_http_instance(lines: list[str], urls: list[str], p: dict) -> None:
     # 状态码必须显式落盘：categraf 不配置时不做任何状态码检查
     if p["expected_status_codes"]:
         lines.append(f'expect_response_status_codes = {_toml_quote(p["expected_status_codes"])}')
+    # 响应内容匹配：留空则不写（categraf 侧空值 = 不做该检查）。
+    # 正则必须已在入库前校验过：categraf 用 regexp.MustCompile，非法正则会让
+    # 整个 http_response 插件 panic，所有 HTTP 拨测一起中断
+    if p.get("expect_substring"):
+        lines.append(f'expect_response_substring = {_toml_quote(p["expect_substring"])}')
+    if p.get("expect_regex"):
+        lines.append(f'expect_response_regular_expression = {_toml_quote(p["expect_regex"])}')
     if p["headers"]:
         quoted = ", ".join(_toml_quote(h) for h in sorted(p["headers"]))
         lines.append(f"headers = [{quoted}]")

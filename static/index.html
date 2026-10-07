@@ -851,6 +851,16 @@
       </div>
       <div id="probeAdvBlock" style="display:none;">
         <div class="form-row">
+          <div class="form-group">
+            <label>响应包含 <span style="color:#8c8c8c;font-weight:400;">（留空不检查响应体）</span></label>
+            <input type="text" id="f_probe_expect_substring" maxlength="500" placeholder='如 "status":"ok"'>
+          </div>
+          <div class="form-group">
+            <label>响应正则 <span style="color:#8c8c8c;font-weight:400;">（Go RE2 语法，留空不检查）</span></label>
+            <input type="text" id="f_probe_expect_regex" maxlength="500" placeholder='如 "code":\s*0'>
+          </div>
+        </div>
+        <div class="form-row">
           <div class="form-group" style="max-width:150px;">
             <label>请求方法</label>
             <select id="f_probe_method" onchange="updateProbeMethodFields()">
@@ -2171,7 +2181,7 @@ function getTimeoutValue(id) {
 }
 
 let siteDraft = null;
-const _SITE_FIELD_IDS = ["f_name","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_memo_content","f_probe_codes","f_probe_url","f_probe_timeout","f_probe_interval","f_probe_protocol","f_probe_read_timeout","f_probe_send","f_probe_expect","f_probe_method","f_probe_follow_redirects","f_probe_headers","f_probe_body","f_probe_tls_ca"];
+const _SITE_FIELD_IDS = ["f_name","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_memo_content","f_probe_codes","f_probe_url","f_probe_expect_substring","f_probe_expect_regex","f_probe_timeout","f_probe_interval","f_probe_protocol","f_probe_read_timeout","f_probe_send","f_probe_expect","f_probe_method","f_probe_follow_redirects","f_probe_headers","f_probe_body","f_probe_tls_ca"];
 
 function _readSiteFields() {
   const d = {};
@@ -2259,6 +2269,8 @@ function openEditSite(btn) {
   $("f_environment").value = s.env || "";
   $("f_monitor").checked = !!s.monitor;
   $("f_probe_codes").value = s.probe_status_codes || "";
+  $("f_probe_expect_substring").value = s.probe_expect_substring || "";
+  $("f_probe_expect_regex").value = s.probe_expect_regex || "";
   setTimeoutValue("f_probe_timeout", s.probe_timeout);
   setIntervalMode("f_probe_interval", s.probe_interval);
   $("f_probe_protocol").value = s.probe_protocol || "tcp";
@@ -2327,6 +2339,8 @@ async function saveSite(btn) {
       monitor: $("f_monitor").checked,
       probe_url: $("f_probe_url").value,
       probe_status_codes: $("f_probe_codes").value.trim(),
+      probe_expect_substring: $("f_probe_expect_substring").value.trim(),
+      probe_expect_regex: $("f_probe_expect_regex").value.trim(),
       probe_timeout: getTimeoutValue("f_probe_timeout"),
       probe_interval: getIntervalValue("f_probe_interval"),
       probe_protocol: $("f_probe_protocol").value,

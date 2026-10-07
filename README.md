@@ -118,6 +118,16 @@ COMPOSE_PROFILES=builtin-mysql docker compose exec -T mysql sh -c \
 
 「👤 用户管理」里可以新建用户（用户名 + 强密码 + 角色）、启用/禁用、改密码、删除。
 
+### 批量删除站点
+
+「管理 ▾ → 批量删除」打开勾选列表，**列表就是当前筛选结果**（分类 / 搜索 / 环境 / 协议 / 监控状态都生效）：
+
+- 支持全选 / 单勾，实时显示「已选 N / M 条」，按钮上带条数，删除前二次确认
+- 后端 `POST /api/sites/batch-delete` 一次读-改-写删完（不是前端循环调 N 次 DELETE，
+  那样每删一条都要全量读写一遍 `data/sites.json`），单次上限 500 条
+- 单个 id 不存在不算失败，返回里用 `not_found` 列出，便于重试
+- 删掉的站点若在监控中，其拨测目标自动消失（下次 categraf 拉取时不再包含）
+
 - **强密码**：≥10 位，须同时含字母和数字，≤72 字节（bcrypt 的硬上限，超出部分会被静默丢弃）
 - **禁用用户** → 该用户旧会话立即失效且无法再登录；启用后旧会话恢复
 - **改密码** → 该用户所有旧会话立即失效（`pwd_epoch` 在 SQL 里原子自增）
@@ -140,7 +150,9 @@ COMPOSE_PROFILES=builtin-mysql docker compose exec -T mysql sh -c \
 |------|------|----------|
 | 请求方法 | GET / POST / PUT / DELETE / HEAD | `GET` 为 categraf 默认值，其余方法显式落盘 |
 | 请求头 | 字符串数组，如 `["X-Key","val"]` | 非空时按字母序落盘为 `headers = [...]` |
-| 请求 Body | 请求体内容 | 非空时以三引号 `"""..."""` 落盘 |
+| 请求 Body | 请求体内容 | 非空时以**单行 quoted string** 落盘。不用三引号：多行基本字符串会保留结尾换行、并把 body 里的字面 `\n` 变成真换行，等于改写请求体，出现非法转义时还会让整份 TOML 解析失败 |
+| 响应包含 | 响应体必须包含该字符串，留空则不检查响应体 | 非空时落盘 `expect_response_substring`；不满足时 categraf 记 `result_code=BodyMismatch` |
+| 响应正则 | 响应体必须匹配该正则（Go RE2 语法），留空则不检查 | 非空时落盘 `expect_response_regular_expression`。**写入前会校验**：语法错或用了 RE2 不支持的写法（反向引用/前后瞻/原子组/占有量词）直接 400 —— categraf 用 `regexp.MustCompile`，非法正则会让整个 http_response 插件起不来 |
 | 跟随重定向 | 默认 / 跟随 / 不跟随 | 显式选择才落盘，默认留空用 categraf 默认行为 |
 | 私有 CA | 证书路径（categraf 服务器本地路径，仅 HTTPS 地址时显示） | 与「跳过证书校验」互斥，勾选跳过时自动清空 |
 | 跳过证书校验 | ⚠️ 勾选后不校验服务端证书（仅 HTTPS 地址时显示） | 优先于私有 CA；勾选时 `tls_ca` 置空，仅落盘 `insecure_skip_verify = true` |
@@ -180,7 +192,13 @@ sites-nav 直接作为 categraf 的 `http_provider`，同时下发两类拨测�
 
 ### 端口拨测（net_response）
 
-访问 `/probes` 页面在线管理 TCP/UDP 端口拨测目标：
+访问 `/probes` 页面在线管理 TCP/UDP 端口拨测目标。该页是**总览**：既列出站点派生的目标（HTTP / 连接串站点），
+也列出独立目标。两类目标的维护方式不同：
+
+| 来源 | 行首 | 怎么维护 |
+|------|------|----------|
+| 站点派生 | `·` | 在首页编辑/删除对应站点（`/probes` 只读展示，避免两处都能改导致配置漂移） |
+| 独立目标 | 勾选框 | 可在本页**勾选后批量删除**（全选/单勾 → 「删除选中」→ 二次确认），也可调 `/api/probes` 单条增删改 |
 
 | 字段 | 说明 |
 |------|------|
@@ -280,7 +298,7 @@ python run.py          # 带 --reload，改 app.py 自动重载
 python tests/run_all.py          # 一键跑全部 7 个套件
 ```
 
-分两类，共约 310 项断言：
+分两类，共 379 项断言：
 
 | 套件 | 类型 | 覆盖 |
 |---|---|---|
@@ -288,7 +306,7 @@ python tests/run_all.py          # 一键跑全部 7 个套件
 | `tests/test_url_validation.py` | 离线 | URL/端口/IP 校验，并把前端函数抽出来跑 node 做**前后端对表** |
 | `tests/test_api_units.py` | 离线 | 登录限流（伪造 IP，不会锁本机）、provider 鉴权、密码策略、**持久化/备份轮转/损坏恢复**（临时目录） |
 | `tests/test_frontend_payload.py` | 离线 | `sitePayload` 必须覆盖 `SiteIn` 全部字段、草稿快照往返（node 真跑） |
-| `tests/test_ui_browser.py` | 离线 | 无头浏览器加载真实 `index.html`：显隐逻辑、弹窗草稿、下拉回填（需要 Edge/Chrome） |
+| `tests/test_ui_browser.py` | 离线 | 无头浏览器加载真实 `index.html` / `probes.html`：显隐逻辑、弹窗草稿、下拉回填、两处批量删除（需要 Edge/Chrome） |
 | `e2e_import.py` | 在线 | 导入/查重/增量更新/拨测目标冲突 |
 | `e2e_full.py` | 在线 | 全接口：站点 CRUD 与校验、快捷监控字段保全、导出、拨测 CRUD、用户与角色权限、provider、备份落盘 |
 

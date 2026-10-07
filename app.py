@@ -145,6 +145,11 @@ class SiteIn(BaseModel):
     # 若这里默认 "" 会让 update 把已有值清掉（编辑一次丢一次探测地址）。
     probe_url: str | None = Field(default=None, max_length=500)
     probe_status_codes: str = Field(default="", pattern=r"^(\d{3}(\|\d{3})*)?$")
+    # 响应内容匹配（HTTP 拨测）：两者留空 = 不检查响应体，只看状态码。
+    # 注意 categraf 用 regexp.MustCompile 编译正则，非法值会让插件 panic，
+    # 所以写入前必须过 toml_gen.validate_regex（见 _validate_site_payload）
+    probe_expect_substring: str = Field(default="", max_length=500)  # 响应体必须包含该字符串
+    probe_expect_regex: str = Field(default="", max_length=500)      # 响应体必须匹配该正则（Go RE2 语法）
     probe_timeout: str = Field(default="", pattern=r"^(\d+(ms|s|m))?$")
     # 探测间隔：留空用 categraf 全局默认；如 30s/500ms/1m（纯数字自动按秒）
     probe_interval: str = Field(default="", pattern=r"^(\d+(ms|s|m))?$")
@@ -744,6 +749,7 @@ from toml_gen import (
     config_version,
     generate_http_toml,
     generate_net_toml,
+    validate_regex,
     validate_status_codes,
 )
 
@@ -990,6 +996,8 @@ def _site_to_http_target(site: dict) -> dict | None:
         "job": _probe_job(site),
         "method": (site.get("probe_method") or "").strip() or "GET",
         "expected_status_codes": codes,
+        "expect_substring": (site.get("probe_expect_substring") or "").strip(),
+        "expect_regex": (site.get("probe_expect_regex") or "").strip(),
         "headers": _parse_probe_headers(site.get("probe_headers") or ""),
         "body": site.get("probe_body") or "",
         "follow_redirects": site.get("probe_follow_redirects"),
@@ -1305,11 +1313,16 @@ def list_probes(authorization: str | None = Header(default=None)):
 def list_probe_targets(authorization: str | None = Header(default=None)):
     """拨测目标总览（只读）：站点派生的 HTTP/端口目标 + 独立端口拨测目标。
     给拨测管理页统一展示，与 categraf 实际拉取的配置一致。
-    独立 probe 目标（probes.json）没有 kind 字段，统一补为端口拨测。"""
+    独立 probe 目标（probes.json）没有 kind 字段，统一补为端口拨测；
+    并标记 source：站点派生的只能在首页改站点，独立目标可以在本页删，
+    不标的话页面上分不清哪些能删。"""
     _require_admin(authorization)
     targets = _all_probe_targets()
-    for t in targets:
+    # 用下标区分而不是按 id：站点和独立目标都是 token_hex(4)，理论上可能撞 id
+    n_site = len(targets) - len(_load_probes())
+    for i, t in enumerate(targets):
         t.setdefault("kind", KIND_NET)
+        t["source"] = "site" if i < n_site else "probe"
     return targets
 
 
@@ -1416,6 +1429,30 @@ def delete_probe(probe_id: str, authorization: str | None = Header(default=None)
 
     _load_mutate_probes(_mutate)
     return {"ok": True}
+
+
+class BatchDeleteProbesIn(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=500)
+
+
+@app.post("/api/probes/batch-delete")
+def batch_delete_probes(body: BatchDeleteProbesIn, authorization: str | None = Header(default=None)):
+    """批量删除端口拨测目标（管理员）。与站点批量删除同一套语义：
+    一次读-改-写删完，返回删掉的数量与没找到的 id，单个不存在不算错误。"""
+    _require_admin(authorization)
+    want = {i.strip() for i in body.ids if isinstance(i, str) and i.strip()}
+    if not want:
+        raise HTTPException(status_code=400, detail="未指定要删除的条目")
+    captured: dict = {}
+
+    def _mutate(probes):
+        existing = {p.get("id") for p in probes}
+        captured["deleted"] = len(existing & want)
+        captured["not_found"] = sorted(want - existing)
+        probes[:] = [p for p in probes if p.get("id") not in want]
+
+    _load_mutate_probes(_mutate)
+    return {"deleted": captured["deleted"], "not_found": captured["not_found"]}
 
 
 def _validate_host_port(url: str) -> None:
@@ -1651,6 +1688,11 @@ def _validate_site_payload(data: dict) -> None:
             codes_err = validate_status_codes(data.get("probe_status_codes", ""))
             if codes_err:
                 raise HTTPException(status_code=400, detail=codes_err)
+            # 正则必须在这里拦住：categraf 是 regexp.MustCompile，
+            # 写进 TOML 后非法值会 panic 并让整个 http_response 插件起不来
+            regex_err = validate_regex((data.get("probe_expect_regex") or "").strip())
+            if regex_err:
+                raise HTTPException(status_code=400, detail=regex_err)
             try:
                 _parse_probe_headers(data.get("probe_headers") or "")
             except ValueError as e:
@@ -1892,6 +1934,8 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
         ("connection", "连接串", "connection"), ("owner", "负责人", "owner"), ("env", "环境标识", "env"),
         ("remark", "备注", "remark"), ("memo_content", "备忘录内容", "memo_content"), ("monitor", "拨测监控", "monitor"),
         ("probe_status_codes", "拨测状态码", "probe_status_codes"), ("probe_timeout", "拨测超时", "probe_timeout"),
+        ("probe_expect_substring", "响应包含", "probe_expect_substring"),
+        ("probe_expect_regex", "响应正则", "probe_expect_regex"),
         ("probe_interval", "探测间隔", "probe_interval"), ("probe_method", "拨测方法", "probe_method"),
         ("probe_headers", "拨测请求头", "probe_headers"), ("probe_body", "拨测Body", "probe_body"),
         ("probe_follow_redirects", "跟随重定向", "probe_follow_redirects"),
@@ -1921,6 +1965,8 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
                 "remark": item_data["remark"],
                 "monitor": item_data["monitor"],
                 "probe_status_codes": item_data.get("probe_status_codes", ""),
+                "probe_expect_substring": item_data.get("probe_expect_substring", ""),
+                "probe_expect_regex": item_data.get("probe_expect_regex", ""),
                 "probe_timeout": item_data.get("probe_timeout", ""),
                 "probe_interval": item_data.get("probe_interval", ""),
                 "probe_method": item_data.get("probe_method", ""),
@@ -2026,9 +2072,9 @@ def import_sites(body: ImportIn, authorization: str | None = Header(default=None
 def _export_csv(sites: list) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    header_cn = ["系统名称", "资源类型", "分类", "域名", "公网地址", "内网地址", "连接串", "负责人", "环境标识", "备注", "备忘录内容", "拨测监控", "拨测状态码", "拨测超时", "探测间隔", "拨测方法", "拨测请求头", "拨测Body", "跟随重定向", "跳过证书校验", "私有CA路径", "采集证书过期时间"]
+    header_cn = ["系统名称", "资源类型", "分类", "域名", "公网地址", "内网地址", "连接串", "负责人", "环境标识", "备注", "备忘录内容", "拨测监控", "拨测状态码", "响应包含", "响应正则", "拨测超时", "探测间隔", "拨测方法", "拨测请求头", "拨测Body", "跟随重定向", "跳过证书校验", "私有CA路径", "采集证书过期时间"]
     writer.writerow(header_cn)
-    key_map = ["name", "kind", "category", "domain", "public_url", "private_url", "connection", "owner", "env", "remark", "memo_content", "monitor", "probe_status_codes", "probe_timeout", "probe_interval", "probe_method", "probe_headers", "probe_body", "probe_follow_redirects", "probe_insecure_skip_verify", "probe_tls_ca", "probe_cert_expire"]
+    key_map = ["name", "kind", "category", "domain", "public_url", "private_url", "connection", "owner", "env", "remark", "memo_content", "monitor", "probe_status_codes", "probe_expect_substring", "probe_expect_regex", "probe_timeout", "probe_interval", "probe_method", "probe_headers", "probe_body", "probe_follow_redirects", "probe_insecure_skip_verify", "probe_tls_ca", "probe_cert_expire"]
     for s in sites:
         row = []
         for k in key_map:

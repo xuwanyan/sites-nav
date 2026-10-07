@@ -136,6 +136,7 @@ const full = {
   memo_content: "备忘录正文", monitor: true, probe_url: "https://a.example.com",
   probe_status_codes: "200|301", probe_timeout: "5s", probe_interval: "30s",
   probe_method: "POST", probe_headers: '["X-Token","abc"]', probe_body: '{"k":"v"}',
+  probe_expect_substring: "statusok", probe_expect_regex: "^OK",
   probe_follow_redirects: null, probe_insecure_skip_verify: false,
   probe_tls_ca: "/etc/categraf/ca.pem", probe_cert_expire: false,
   probe_protocol: "udp", probe_read_timeout: "3s", probe_send: "PING", probe_expect: "PONG",
@@ -153,6 +154,8 @@ ok("sitePayload 保留读超时", p.probe_read_timeout === "3s", String(p.probe_
 ok("sitePayload 保留发送内容", p.probe_send === "PING", String(p.probe_send));
 ok("sitePayload 保留期望响应", p.probe_expect === "PONG", String(p.probe_expect));
 ok("sitePayload 保留自定义探测地址", p.probe_url === "https://a.example.com", String(p.probe_url));
+ok("sitePayload 保留响应包含", p.probe_expect_substring === "statusok", String(p.probe_expect_substring));
+ok("sitePayload 保留响应正则", p.probe_expect_regex === "^OK", String(p.probe_expect_regex));
 
 // overrides 优先级
 const off = sitePayload(full, { monitor: false });

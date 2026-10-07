@@ -109,6 +109,7 @@ def main():
                    "probe_status_codes": "200|301", "probe_timeout": "5s", "probe_interval": "30s",
                    "probe_method": "POST", "probe_headers": '["X-Token","abc"]',
                    "probe_body": '{"k":"v"}', "probe_follow_redirects": True,
+                   "probe_expect_substring": "statusok", "probe_expect_regex": r'"code":\s*0',
                    "probe_tls_ca": "/etc/categraf/ca.pem", "probe_cert_expire": False}
         c = requests.post(f"{BASE}/api/sites", headers=H, json=ok_site, timeout=5)
         check("创建 HTTP 站点", c.status_code == 200, f"status={c.status_code} {c.text[:120]}")
@@ -142,6 +143,11 @@ def main():
             ("超时格式非法", {"name": f"{SP}坏超时", "env": "生产环境", "domain": "e2e2-c.example.com",
                               "monitor": True, "probe_timeout": "5x"}),
             ("域名填 IP", {"name": f"{SP}域名填IP", "env": "生产环境", "domain": "10.0.0.1"}),
+            ("响应正则语法错", {"name": f"{SP}坏正则", "env": "生产环境", "domain": "e2e2-r1.example.com",
+                                "monitor": True, "probe_expect_regex": "a(b"}),
+            ("响应正则用 RE2 不支持写法", {"name": f"{SP}不兼容正则", "env": "生产环境",
+                                          "domain": "e2e2-r2.example.com",
+                                          "monitor": True, "probe_expect_regex": "(?=x)"}),
         ]
         for label, body in bad_cases:
             rb = requests.post(f"{BASE}/api/sites", headers=H, json=body, timeout=5)
@@ -233,7 +239,7 @@ def main():
               f"status={ec.status_code} BOM={ec.content[:3]!r}")
         text = ec.content.decode("utf-8-sig")
         head = text.splitlines()[0]
-        need_cols = ["系统名称", "拨测监控", "拨测状态码", "探测间隔", "拨测方法", "请求头",
+        need_cols = ["系统名称", "拨测监控", "拨测状态码", "响应包含", "响应正则", "探测间隔", "拨测方法", "请求头",
                      "跟随重定向", "跳过证书校验", "私有CA路径", "采集证书过期时间", "备忘录内容"]
         miss = [c for c in need_cols if c not in head]
         check("导出 CSV 列完整", not miss, f"缺: {miss}")
@@ -273,6 +279,34 @@ def main():
         check("删除后不在列表", all(p["id"] != probe_id for p in
                                   requests.get(f"{BASE}/api/probes", headers=H, timeout=5).json()))
 
+        # ── 5b. 拨测目标批量删除 + 来源标记 ─────────────────────────────
+        made_p = []
+        for i in range(2):
+            rp = requests.post(f"{BASE}/api/probes", headers=H,
+                               json={"url": f"10.9.9.{30 + i}:6379", "job": f"{SP}批量探针{i}"}, timeout=5)
+            if rp.status_code == 200:
+                made_p.append(rp.json()["id"])
+        check("批量删除拨测目标：先建 2 个", len(made_p) == 2, f"n={len(made_p)}")
+        pt = requests.get(f"{BASE}/api/probe-targets", headers=H, timeout=5).json()
+        check("目标总览带 source 标记", bool(pt) and all("source" in t for t in pt),
+              f"缺标记={[t.get('url') for t in pt if 'source' not in t][:3]}")
+        check("能区分站点派生与独立目标",
+              any(t["source"] == "site" for t in pt) and any(t["source"] == "probe" for t in pt),
+              f"site={sum(1 for t in pt if t['source'] == 'site')} probe={sum(1 for t in pt if t['source'] == 'probe')}")
+        if len(made_p) == 2:
+            bp = requests.post(f"{BASE}/api/probes/batch-delete", headers=H,
+                               json={"ids": made_p + ["deadbeef"]}, timeout=10)
+            check("批量删除拨测目标返回数量", bp.status_code == 200 and bp.json().get("deleted") == 2,
+                  str(bp.json())[:140])
+            check("批量删除拨测目标报告 not_found", bp.json().get("not_found") == ["deadbeef"],
+                  str(bp.json())[:140])
+            check("批量删除后列表不含它们",
+                  all(p["id"] not in made_p for p in
+                      requests.get(f"{BASE}/api/probes", headers=H, timeout=5).json()))
+            check("批量删除拨测目标空列表 → 422",
+                  requests.post(f"{BASE}/api/probes/batch-delete", headers=H,
+                                json={"ids": []}, timeout=5).status_code == 422)
+
         # ── 6. 用户管理 ─────────────────────────────────────────────────
         uname = f"{UP}reader"
         uc = requests.post(f"{BASE}/api/users", headers=H,
@@ -306,6 +340,8 @@ def main():
             ("配置预览", lambda: requests.get(f"{BASE}/api/config/preview", headers=HU, timeout=5)),
             ("批量删除", lambda: requests.post(f"{BASE}/api/sites/batch-delete", headers=HU,
                                            json={"ids": ["aaaaaaaa"]}, timeout=5)),
+            ("批量删除拨测目标", lambda: requests.post(f"{BASE}/api/probes/batch-delete", headers=HU,
+                                                json={"ids": ["aaaaaaaa"]}, timeout=5)),
         ]
         for label, fn in forbidden:
             check(f"普通用户被拒：{label}", fn().status_code == 403)
@@ -366,6 +402,10 @@ def main():
               toml[:120])
         check("预览含端口目标", "10.9.9.11:6379" in pv.json().get("net_toml", ""),
               pv.json().get("net_toml", "")[:120])
+        check("预览含响应包含", "expect_response_substring" in pv.json().get("http_toml", ""),
+              pv.json().get("http_toml", "")[-160:])
+        check("预览含响应正则", "expect_response_regular_expression" in pv.json().get("http_toml", ""),
+              pv.json().get("http_toml", "")[-160:])
 
         ct = env_get("CATEGRAF_TOKEN")
         if not ct:
