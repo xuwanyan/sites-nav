@@ -770,6 +770,10 @@
         <div id="monitorHint" style="font-size:11px; color:#8c8c8c; margin-top:4px;">填入 URL 地址或连接串后可启用拨测监控</div>
       </div>
       <div class="form-row" id="probeParamsRow" style="display:none;">
+        <div class="form-group" id="probeUrlGroup" style="max-width:260px; display:none;">
+          <label>探测地址</label>
+          <select id="f_probe_url" onchange="updateProbeTls()"></select>
+        </div>
         <div class="form-group" id="probeCodesGroup">
           <label>期望状态码</label>
           <input type="text" id="f_probe_codes" placeholder="200，多个用 | 分隔">
@@ -1012,7 +1016,7 @@
       <div class="form-row">
         <div class="form-group" style="max-width:220px;">
           <label>探测地址</label>
-          <select id="probeUrlSel"><option value="">自动（域名&gt;公网&gt;内网）</option></select>
+          <select id="probeUrlSel" onchange="updateProbeQuickTls()"><option value="">自动（域名&gt;公网&gt;内网）</option></select>
         </div>
         <div class="form-group">
           <label>期望状态码</label>
@@ -2104,7 +2108,7 @@ function getTimeoutValue(id) {
 }
 
 let siteDraft = null;
-const _SITE_FIELD_IDS = ["f_name","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_memo_content","f_probe_codes","f_probe_timeout","f_probe_interval","f_probe_protocol","f_probe_read_timeout","f_probe_send","f_probe_expect","f_probe_method","f_probe_follow_redirects","f_probe_headers","f_probe_body","f_probe_tls_ca"];
+const _SITE_FIELD_IDS = ["f_name","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_memo_content","f_probe_codes","f_probe_url","f_probe_timeout","f_probe_interval","f_probe_protocol","f_probe_read_timeout","f_probe_send","f_probe_expect","f_probe_method","f_probe_follow_redirects","f_probe_headers","f_probe_body","f_probe_tls_ca"];
 
 function _readSiteFields() {
   const d = {};
@@ -2121,6 +2125,9 @@ function _readSiteFields() {
 }
 function _applySiteFields(d) {
   _SITE_FIELD_IDS.forEach(id => { $(id).value = d[id] || ""; });
+  // 探测地址是「自动 / 域名 / 公网 / 内网」下拉：选项来自 URL 字段，
+  // 必须在 URL 恢复之后再铺选项，然后才谈得上回填选中值
+  updateProbeUrlOptions(d.f_probe_url || "");
   // 探测间隔是「默认/自定义」二选一：只恢复 .value 不够，单选框也得跟着回到对应档
   setIntervalMode("f_probe_interval", d.f_probe_interval || "");
   // 超时是下拉：档位里有就选档位，没有就落「自定义」，别把旧值洗掉
@@ -2198,6 +2205,8 @@ function openEditSite(btn) {
   $("f_probe_tls_ca").value = s.probe_tls_ca || "";
   $("f_probe_cert_expire").checked = s.probe_cert_expire !== false;
   toggleProbeSkip();
+  // 探测地址下拉：选项来自上面刚回填的 URL 字段，选中值来自记录
+  updateProbeUrlOptions(s.probe_url || "");
   $("f_remark").value = s.remark || "";
   $("f_memo_content").value = s.memo_content || "";
   // 回填 kind：备忘录按记录原值；其余按是否走 HTTP 拨测（有无 URL）归入 网站/非网站
@@ -2248,6 +2257,7 @@ async function saveSite(btn) {
       remark: $("f_remark").value.trim(),
       memo_content: $("f_memo_content").value,
       monitor: $("f_monitor").checked,
+      probe_url: $("f_probe_url").value,
       probe_status_codes: $("f_probe_codes").value.trim(),
       probe_timeout: getTimeoutValue("f_probe_timeout"),
       probe_interval: getIntervalValue("f_probe_interval"),
@@ -2362,6 +2372,7 @@ function updateMonitorBtn() {
     monitorCb.style.opacity = "1";
     $("monitorHint").textContent = "HTTP 拨测：探测 URL 状态码和响应";
     codesGroup.style.display = "";
+    $("probeUrlGroup").style.display = "";           // HTTP 拨测可选探测地址（域名/公网/内网）
     $("probeProtocolGroup").style.display = "none";  // HTTP 拨测不需要协议
     $("probeNetAdvBlock").style.display = "none";    // HTTP 拨测不需要端口高级配置
     paramsRow.style.display = monitorCb.checked ? "" : "none";
@@ -2372,6 +2383,7 @@ function updateMonitorBtn() {
     monitorCb.style.opacity = "1";
     $("monitorHint").textContent = "端口拨测：从连接串自动提取 host:port 做 TCP/UDP 连通性检测";
     codesGroup.style.display = "none";  // 端口拨测不需要状态码
+    $("probeUrlGroup").style.display = "none";    // 端口拨测地址取自连接串，不用选
     $("probeProtocolGroup").style.display = "";  // 端口拨测可选手动选择 TCP/UDP
     paramsRow.style.display = monitorCb.checked ? "" : "none";
     $("probeAdvBlock").style.display = "none";  // 端口拨测不需要 HTTP 高级配置
@@ -2630,10 +2642,37 @@ function toggleProbeSkip() {
   }
 }
 
-// 拨测地址是 HTTPS 时显示 TLS 配置块
+// 编辑表单的「探测地址」下拉：选项 = 自动 + 当前填的 域名/公网/内网。
+// keep 是期望选中的值；它可能不在选项里（接口/导入写入的 probe_url 不对应任何 URL 字段），
+// 这时补一个选项挂上去，避免回填时被静默丢成「自动」——那等于保存时把探测地址清掉了。
+function updateProbeUrlOptions(keep) {
+  const sel = $("f_probe_url");
+  if (!sel) return;
+  const want = (keep !== undefined ? keep : sel.value) || "";
+  const opts = [["", "自动（域名>公网>内网）"]];
+  [["f_domain", "域名"], ["f_public_url", "公网"], ["f_internal_url", "内网"]].forEach(([id, lab]) => {
+    const v = $(id).value.trim();
+    if (v) opts.push([v, `${lab} · ${v}`]);
+  });
+  if (want && !opts.some(([v]) => v === want)) opts.push([want, `当前值 · ${want}`]);
+  sel.innerHTML = opts
+    .map(([v, t]) => `<option value="${escapeAttr(v)}">${escapeHtml(t)}</option>`).join("");
+  sel.value = want;
+}
+
+// 实际会被拨测的地址：优先「探测地址」下拉，否则 域名 > 公网 > 内网（与后端 _pick_probe_url 同口径）
+function effectiveSiteProbeUrl() {
+  const manual = ($("f_probe_url") || {}).value || "";
+  return manual || $("f_domain").value.trim() || $("f_public_url").value.trim() || $("f_internal_url").value.trim();
+}
+
+// 拨测地址是 HTTPS 时显示 TLS 配置块。
+// 判断必须用 effectiveSiteProbeUrl()，不能只看"优先级第一个地址"：
+// 用户把探测地址选成 https 的公网地址、而域名是 http 时，按优先级判断会把 TLS 区块
+// 藏起来并把已填的跳过校验/私有 CA 清掉 —— 配置白填，还看不出原因。
 function updateProbeTls() {
-  const probeUrl = $("f_domain").value.trim() || $("f_public_url").value.trim() || $("f_internal_url").value.trim();
-  const isHttps = /^https:\/\//i.test(probeUrl);
+  updateProbeUrlOptions();
+  const isHttps = /^https:\/\//i.test(effectiveSiteProbeUrl());
   $("probeTlsBlock").style.display = (isHttps && $("f_monitor").checked) ? "" : "none";
   if (!isHttps) {
     $("f_probe_skip_verify").checked = false;
@@ -2645,7 +2684,10 @@ function updateProbeTls() {
 // 拨测地址是 HTTPS 时才显示 TLS 配置块（与新增弹框的 updateProbeTls 同一规则）
 function updateProbeQuickTls() {
   const s = sites.find(x => x.id === $("probeSiteId").value);
-  const probeUrl = s ? (s.domain || s.public_url || s.private_url || "") : "";
+  const sel = $("probeUrlSel");
+  // 用下拉里实际选中的探测地址，而不是"优先级第一个地址"：两者可能不是同一个 ——
+  // 选成 https 的公网地址时，按优先级（域名是 http）判断会把 TLS 区块藏掉并清空配置
+  const probeUrl = (sel && sel.value) || (s ? (s.domain || s.public_url || s.private_url || "") : "");
   const isHttps = /^https:\/\//i.test(probeUrl);
   $("probeQuickTls").style.display = isHttps ? "" : "none";
   if (!isHttps) {
@@ -2718,7 +2760,14 @@ function openProbeModal(btn) {
       .map(([lab, k]) => { const v = (s[k] || "").trim(); return v ? `<option value="${escapeHtml(v)}">${lab} · ${escapeHtml(v)}</option>` : ""; })
       .join("");
     sel.innerHTML = auto + opts;
-    if ((s.probe_url || "").trim()) sel.value = s.probe_url;
+    const curProbeUrl = (s.probe_url || "").trim();
+    // 记录里的探测地址可能不在该站点的 URL 字段里（接口/导入写入的）：补个选项挂上，
+    // 否则 sel.value 落不上去，用户一点保存就被静默清成「自动」
+    if (curProbeUrl && !Array.from(sel.options).some(o => o.value === curProbeUrl)) {
+      sel.insertAdjacentHTML("beforeend",
+        `<option value="${escapeAttr(curProbeUrl)}">当前值 · ${escapeHtml(curProbeUrl)}</option>`);
+    }
+    if (curProbeUrl) sel.value = curProbeUrl;
     // 已有参数原样回填：monitor=false 但保留了拨测参数的记录（CSV 导入不校验这俩搭配）
     // 不能清空，否则用户看不到也改不了
     $("probeCodes").value = s.probe_status_codes || "200";

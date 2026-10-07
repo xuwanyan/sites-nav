@@ -302,6 +302,12 @@ def main():
             cleared = next(s for s in get_sites(H) if s["id"] == sid)
             check("显式传空串仍可清除 probe_url", cleared.get("probe_url") == "",
                   f"probe_url={cleared.get('probe_url')!r}")
+            # 编辑表单现在会带上 probe_url（表单里新增了下拉）：显式改成另一个地址应生效
+            requests.put(f"{BASE}/api/sites/{sid}", headers=H,
+                         json=dict(edit, probe_url="http://180.235.66.99:1234"), timeout=5)
+            changed = next(s for s in get_sites(H) if s["id"] == sid)
+            check("显式改 probe_url 生效", changed.get("probe_url") == "http://180.235.66.99:1234",
+                  f"probe_url={changed.get('probe_url')!r}")
 
     finally:
         cleanup(H)
