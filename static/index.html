@@ -1473,15 +1473,18 @@ function filterMonitor(m) {
   renderSites();
 }
 
-// 实际拨测协议：有 URL → HTTP；仅连接串 → probe_protocol 或默认 tcp
+// 实际拨测协议（资源属性，与是否已监控无关）：
+// 无任何探测地址（既无 URL 也无连接串，如备忘录）→ ""，不参与协议筛选；
+// 有 URL → HTTP；仅连接串 → probe_protocol 或默认 tcp。
 function probeProtocolOf(s) {
   if (hasAnyUrl(s)) return "HTTP";
-  return ((s.probe_protocol || "tcp") + "").toUpperCase();
+  if ((s.connection || "").trim()) return ((s.probe_protocol || "tcp") + "").toUpperCase();
+  return "";
 }
-// 协议计数：只统计已监控目标。全部=取值为 HTTP/TCP/UDP 的已监控数
+// 协议计数：统计所有具备探测地址的目标（含未监控）。全部=取值为 HTTP/TCP/UDP 的数量
 function protocolCount(p) {
-  if (p === "全部") return sites.filter(s => s.monitor && ["HTTP","TCP","UDP"].includes(probeProtocolOf(s))).length;
-  return sites.filter(s => s.monitor && probeProtocolOf(s) === p).length;
+  if (p === "全部") return sites.filter(s => ["HTTP","TCP","UDP"].includes(probeProtocolOf(s))).length;
+  return sites.filter(s => probeProtocolOf(s) === p).length;
 }
 function filterProtocol(p) {
   activeProtocol = p;
@@ -1508,8 +1511,9 @@ function siteMatchesFilters(s, keyword) {
   // 拨测状态筛选：与计数口径一致——已监控=monitor 为真；未监控=有地址但没开监控
   if (activeMonitor === "已监控" && !s.monitor) return false;
   if (activeMonitor === "未监控" && (s.monitor || !(s.domain || s.public_url || s.private_url || s.connection))) return false;
-  // 拨测协议筛选：仅作用于已监控目标
-  if (activeProtocol !== "全部" && (!s.monitor || probeProtocolOf(s) !== activeProtocol)) return false;
+  // 拨测协议筛选：协议是资源属性，未监控但填了连接串的 TCP/UDP 资源同样命中；
+  // 无探测地址（备忘录/空地址）probeProtocolOf 返回 ""，协议筛选下自然不命中
+  if (activeProtocol !== "全部" && probeProtocolOf(s) !== activeProtocol) return false;
   return true;
 }
 
