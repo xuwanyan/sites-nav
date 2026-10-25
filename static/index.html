@@ -1659,6 +1659,7 @@ function moreMenu(s, env) {
     <button class="btn btn-default btn-sm more-btn" title="更多操作" aria-haspopup="true" aria-expanded="false" onclick="toggleCardMenu(event, this)">${icon("more")}</button>
     <div class="menu-pop" role="menu">
       <button class="menu-item" role="menuitem" data-edit-id="${escapeAttr(s.id)}" onclick="closeCardMenus();openEditSite(this)">${icon("edit")} 编辑</button>
+      <button class="menu-item" role="menuitem" data-copy-id="${escapeAttr(s.id)}" onclick="closeCardMenus();openCopySite(this)">${icon("copy")} 复制</button>
       <button class="menu-item danger" role="menuitem" data-del-id="${escapeAttr(s.id)}" data-del-name="${escapeAttr(s.name)}" data-del-env="${escapeAttr(env || s.env || "")}" onclick="closeCardMenus();openDeleteModal(this)">${icon("trash")} 删除</button>
     </div>
   </span>`;
@@ -2185,6 +2186,8 @@ function getTimeoutValue(id) {
 }
 
 let siteDraft = null;
+// 复制新增模式：保存时若「同名同环境」已存在，自动加「-副本」后缀（见 saveSite）
+let _copyMode = false;
 const _SITE_FIELD_IDS = ["f_name","f_category","f_public_url","f_internal_url","f_domain","f_connection","f_owner","f_remark","f_memo_content","f_probe_codes","f_probe_url","f_probe_expect_substring","f_probe_expect_regex","f_probe_timeout","f_probe_interval","f_probe_protocol","f_probe_read_timeout","f_probe_send","f_probe_expect","f_probe_method","f_probe_follow_redirects","f_probe_headers","f_probe_body","f_probe_tls_ca"];
 
 function _readSiteFields() {
@@ -2239,6 +2242,7 @@ function clearSiteDraft() {
 function openSiteModal() {
   $("siteModalTitle").textContent = "新增资源";
   $("editSiteId").value = "";
+  _copyMode = false;
   _applySiteFields({});
   // 回填上次没提交的草稿
   if (siteDraft) {
@@ -2262,6 +2266,7 @@ function openEditSite(btn) {
   siteDraft = null;   // 编辑始终从记录加载，不能拿新增草稿顶上来
   $("siteModalTitle").textContent = "编辑资源";
   $("draftClearBtn").style.display = "none";
+  _copyMode = false;
   $("editSiteId").value = s.id;
   $("f_name").value = s.name || "";
   $("f_category").value = s.category || "";
@@ -2304,6 +2309,34 @@ function openEditSite(btn) {
   $("siteModal").classList.add("show");
 }
 
+// 复制新增：以源站「基础信息」预填新增弹窗，地址与拨测配置一律留空，保存走 POST 新建。
+// 名称默认沿用原名（对应「跨环境复制」：同名不同环境是合法的分组卡场景）；
+// 若保存时同名同环境已存在，由 saveSite 依 _copyMode 自动加「-副本」后缀。
+function openCopySite(btn) {
+  const src = sites.find(x => x.id === btn.dataset.copyId);
+  if (!src) { showToast("数据不存在，请刷新页面", "error"); return; }
+  siteDraft = null;          // 复制不从上次草稿恢复
+  _copyMode = true;          // 通知 saveSite：同名同环境时自动加后缀
+  $("siteModalTitle").textContent = "复制新增资源";
+  $("draftClearBtn").style.display = "none";
+  $("editSiteId").value = "";  // 清空 id → 保存走 POST 新建
+  // 只带基础信息：名称/类型/分类/环境/负责人/备注/备忘录正文；地址与拨测配置留空
+  _applySiteFields({
+    f_name: src.name || "",
+    f_kind: src.kind || "网站",
+    f_category: src.category || "",
+    f_environment: src.env || "生产环境",
+    f_owner: src.owner || "",
+    f_remark: src.remark || "",
+    f_memo_content: src.memo_content || "",
+    f_monitor: false,
+  });
+  onKindChange();
+  toggleProbeParams();
+  $("siteModal").classList.add("show");
+  setTimeout(() => $("f_name").focus(), 100);
+}
+
 let _editBaseline = null;   // 编辑模式打开时的初始值快照，用于关闭前脏检查
 
 function closeSiteModal() {
@@ -2313,8 +2346,9 @@ function closeSiteModal() {
       if (!confirm("有未保存的修改，确定放弃吗？")) return;
     }
     _editBaseline = null;
-  } else if (_hasSiteContent()) {
-    // 新增模式：有内容存草稿，下次打开接着填
+  } else if (!_copyMode && _hasSiteContent()) {
+    // 新增模式：有内容存草稿，下次打开接着填。
+    // 复制模式不写草稿，否则会把用户上一份「新增」草稿覆盖掉（复制重来只需再点一次）
     siteDraft = _readSiteFields();
   }
   $("siteModal").classList.remove("show");
@@ -2389,6 +2423,16 @@ async function saveSite(btn) {
         showToast("探测间隔格式不对：只能填数字或加 ms / s / m 单位（如 30s / 500ms / 1m）", "error"); return;
       }
     }
+    // 复制新增：若同名同环境已存在，自动加「-副本」后缀（循环确保即使「-副本」也被占用仍能落库）。
+    // 跨环境复制时用户改了环境，这里自然不触发，保留原名。
+    if (!id && _copyMode) {
+      const base = data.name;
+      let n = 0;
+      while (sites.some(x => x.name === data.name && x.env === data.env)) {
+        n += 1;
+        data.name = base + "-副本" + (n > 1 ? n : "");
+      }
+    }
     if (id) {
       await api(`/api/sites/${id}`, { method: "PUT", body: JSON.stringify(data) });
       showToast("修改成功", "success");
@@ -2400,6 +2444,7 @@ async function saveSite(btn) {
     // closeSiteModal 在「新增模式 + 表单有内容」时会存草稿，顺序反了会把刚保存的内容又存成草稿
     siteDraft = null;
     _editBaseline = null;   // 已落库，清脏检查快照，否则关闭弹框会误报"有未保存修改"
+    _copyMode = false;      // 复制流程结束，退出复制模式
     _applySiteFields({});
     closeSiteModal();
     await loadSites();
