@@ -1827,6 +1827,12 @@ function copyGroupInfo(btn) {
       if ((s.public_url || "").trim()) lines.push(`公网: ${s.public_url}`);
       if ((s.private_url || "").trim()) lines.push(`内网: ${s.private_url}`);
       if ((s.connection || "").trim()) lines.push(`连接串: ${s.connection}`);
+      // 按钮叫「复制全部信息」，备注和备忘录正文也是信息的一部分：
+      // 少这两项用户会以为内容丢了（尤其备忘录，原本只剩一个名字、什么都没复制到）
+      if ((s.kind || "") === "备忘录" && (s.memo_content || "").trim()) {
+        lines.push(`内容: ${s.memo_content.trim()}`);
+      }
+      if ((s.remark || "").trim()) lines.push(`备注: ${s.remark.trim()}`);
     });
   });
   const text = lines.join("\n");

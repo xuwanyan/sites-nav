@@ -29,7 +29,8 @@ ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "static" / "index.html"
 PROBES_PAGE = ROOT / "static" / "probes.html"
 BOOT = ("<script>localStorage.setItem('nav_token','uitest');"
-        "localStorage.setItem('nav_role','admin');</script>")
+        "localStorage.setItem('nav_role','admin');"
+        "localStorage.setItem('groupByEnv','true');</script>")
 RESULTS = []
 
 
@@ -74,7 +75,8 @@ FIXTURES = [
          public_url="https://1.2.3.4:8443", private_url="http://10.0.0.1",
          monitor=True, probe_url="https://1.2.3.4:8443",
          probe_status_codes="200|301", probe_timeout="5s", probe_interval="30s",
-         probe_method="POST", probe_headers='["X-Token","abc"]', probe_cert_expire=False),
+         probe_method="POST", probe_headers='["X-Token","abc"]', probe_cert_expire=False,
+         remark="备注内容-ABC"),
     # s2：纯 http，GET，没有任何请求头/body → 两栏都该收起来
     site("s2a2b3c4", "普通HTTP站点", domain="oa.example.com", monitor=True,
          probe_status_codes="200"),
@@ -256,6 +258,28 @@ window.confirm = function () { return true; };   // 无头下 confirm 默认被�
   ok("sitePayload 输出带 memo_content 字段", "memo_content" in p);
   ok("sitePayload 输出带 probe_cert_expire=false", p.probe_cert_expire === false);
   ok("sitePayload 输出不带 id", !("id" in p));
+
+  // ── 复制全部信息：备注 / 备忘录正文必须一起复制 ──
+  // 拦截 copyText 捕获"要写进剪贴板的文本"，不真的碰剪贴板（无头环境也不允许）
+  let copied = "";
+  const realCopyText = window.copyText;
+  window.copyText = (t) => { copied = t; };
+  const groupBtns = document.querySelectorAll(".copy-group-btn");
+  ok("分组卡出现「复制全部信息」按钮", groupBtns.length > 0, "btns=" + groupBtns.length);
+  const headCard = Array.from(document.querySelectorAll(".cards-grid .card")).find(c => c.textContent.indexOf("HTTPS探针站点") >= 0);
+  if (headCard) {
+    copyGroupInfo(headCard.querySelector(".copy-group-btn"));
+    ok("复制全部信息含地址", copied.indexOf("hr.example.com") >= 0, copied.split("\n")[0]);
+    ok("复制全部信息含备注", copied.indexOf("备注: 备注内容-ABC") >= 0,
+       copied.replace(/\n/g, " | ").slice(0, 140));
+  }
+  const memoCard = Array.from(document.querySelectorAll(".cards-grid .card")).find(c => c.textContent.indexOf("备忘录条目") >= 0);
+  if (memoCard) {
+    copyGroupInfo(memoCard.querySelector(".copy-group-btn"));
+    ok("备忘录的复制全部信息含正文", copied.indexOf("内容: 纯文本正文") >= 0,
+       copied.replace(/\n/g, " | ").slice(0, 140));
+  }
+  window.copyText = realCopyText;
 
   // ── 批量删除（放最后：它会真的把 stub 里的数据删掉） ──
   openBatchDeleteModal();
